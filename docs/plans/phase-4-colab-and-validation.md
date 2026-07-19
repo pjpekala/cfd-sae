@@ -1,79 +1,68 @@
 # Phase 4 - Colab Workflow and Validation
 
-Finalize Colab-first usability, notebook parity, and reproducibility validation.
+Finalize Colab-first usability and reproducibility validation. The chosen
+backend is **google-colab-cli** (terminal CLI), which replaces the notebook
+setup-cell workflow: it provisions a GPU VM, runs our scripts via `uv run`, and
+tears down. Our scripts are unchanged (`--hardware colab` + `uv run` contract).
 
 ## Goals
 
-- Make fresh Colab bring-up fast and repeatable.
-- Ensure notebook workflow mirrors script behavior.
+- Make Colab bring-up fast, repeatable, and notebook-free.
 - Validate restart/resume across Colab runtime resets.
+- Document the CLI workflow in README.
 
 ## Deliverables
 
-- Notebooks:
-  - `notebooks/01_train_mgn.ipynb`
-  - `notebooks/02_extract_embeddings.ipynb`
-  - `notebooks/03_train_sae.ipynb`
-  - `notebooks/04_analysis.ipynb`
-- Updated `README.md` with Colab quickstart and troubleshooting
-- Final reproducibility checklist results documented
+- `scripts/colab_run.sh` — provision + upload + exec + download + stop wrapper.
+- `google-colab-cli` in dev dependency group.
+- Updated `README.md` Colab quickstart (CLI primary; legacy notebook flow in details).
+- Final reproducibility checklist documented.
 
 ## Tasks
 
-1. Add common notebook setup cell:
-   - Detect Colab.
-   - Mount Drive.
-   - Clone/pull repo.
-   - Install dependencies.
-   - Construct env via `get_env(HARDWARE)`.
-2. Keep notebooks thin:
-   - Prefer invoking underlying script/module functions.
-   - Avoid duplicate logic in notebook cells.
-3. Write Colab quickstart in README:
-   - First-time setup.
-   - Resume workflow after disconnect.
-   - How to switch/lock `run_name`.
-4. Add troubleshooting:
-   - PyG wheel compatibility.
-   - Missing TFRecord package.
-   - Drive path permissions.
-   - OOM and batch-size fallback.
-5. Perform validation matrix:
-   - Fresh runtime run.
-   - Runtime reset.
-   - Resume run.
-   - Continue to embeddings/SAE/analysis.
+1. `scripts/colab_run.sh`: drives `colab new --gpu` -> `colab upload` ->
+   `colab exec "uv run python scripts/<stage>.py --hardware colab ..."` ->
+   `colab download checkpoints embeddings runs ./` -> `colab stop`.
+   Env: `COLAB_GPU` (default A100), `COLAB_KEEP=1` (leave VM for follow-up).
+2. Drive persistence: set `CFD_SAE_BASE_DIR` to a `colab drivemount` path so
+   checkpoints/embeddings survive teardown; `--resume` continues on a later VM.
+3. README Colab quickstart (CLI primary) + troubleshooting (PyG wheel, missing
+   TFRecord pkg, Drive perms, OOM/batch fallback).
+4. Notebooks (OPTIONAL): if desired, thin wrappers that call the same scripts.
+   Deprioritized now that colab-cli covers the workflow without notebooks.
+5. Validation matrix (local dry-run + real Colab):
+   - Fresh VM: `colab_run.sh train_mgn` writes checkpoint + downloads it.
+   - Runtime reset: relaunch with `--resume` continues.
+   - Downstream: extract -> train_sae -> analyze all produce artifacts.
 
 ## Validation Matrix
 
-1. Fresh Colab runtime:
-   - Setup cell succeeds.
-   - `train_mgn.py` writes checkpoint.
-2. After runtime reset:
-   - Setup cell succeeds again.
-   - Resume picks latest checkpoint and continues.
-3. Downstream stages:
-   - Embeddings generated under run-scoped directory.
-   - SAE trains and checkpoints.
-   - Analysis outputs generated.
+1. Local dry-run of `colab_run.sh` (no GPU): confirm command construction.
+2. Fresh Colab VM: `train_mgn.py` checkpoints + downloads to ./checkpoints.
+3. After reset: `--resume` restores and continues.
+4. Full pipeline outputs validated end-to-end.
 
 ## Acceptance Criteria
 
-- A new Colab session can recover and continue progress with only:
-  - setup cell
-  - one resume command
-- README instructions are sufficient for another engineer to reproduce.
+- A new Colab session can run the full pipeline with only `colab_run.sh <stage>`.
+- README instructions sufficient for another engineer to reproduce.
+- Resume across resets confirmed.
 
 ## Risks and Mitigations
 
+- Risk: CLI auth/expiry.
+  - Mitigation: `colab` uses OAuth2 by default; document re-auth.
+- Risk: Large upload/download of repo + artifacts.
+  - Mitigation: `.gitignore`-style excludes (venv/data) already in place; only
+    upload source, download checkpoints/embeddings/runs.
 - Risk: Notebook/script drift.
-  - Mitigation: Notebook calls shared script functions.
-- Risk: Dependency issues in Colab image changes.
-  - Mitigation: Pin critical package versions and document alternate wheels.
+  - Mitigation: notebooks (if added) call shared script functions, not copies.
 
 ## Exit Checklist
 
-- [ ] All four notebooks run with shared setup logic.
-- [ ] README Colab quickstart verified in a fresh session.
-- [ ] Resume after reset confirmed.
-- [ ] Full pipeline outputs validated end-to-end.
+- [x] `scripts/colab_run.sh` wrapper implemented + bash syntax checked.
+- [x] `google-colab-cli` added to dev deps; `uv sync` installs it.
+- [x] README Colab quickstart updated (CLI primary).
+- [ ] Real Colab VM run validated (fresh + resume).
+- [ ] Full pipeline outputs validated end-to-end on Colab.
+- [ ] (Optional) notebooks parity.

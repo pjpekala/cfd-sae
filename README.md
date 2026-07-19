@@ -40,33 +40,51 @@ uv run python scripts/train_mgn.py --help
 uv run python scripts/train_mgn.py --hardware auto --run-name smoke-local --epochs 1
 ```
 
-## Quickstart (Colab)
+## Quickstart (Colab via google-colab-cli)
 
-In a fresh Colab runtime, install `uv`, sync deps, and run scripts with
-`uv run`.
+`google-colab-cli` provisions a GPU VM, runs our scripts there via `uv run`, and
+tears it down — no notebooks required. Our scripts are unchanged; the CLI is just
+the transport.
+
+```bash
+# 1) Install the CLI (one time)
+uv tool install google-colab-cli
+
+# 2) Run a pipeline stage on a fresh A100 VM (auto-provisions + releases)
+bash scripts/colab_run.sh train_mgn --run-name colab-run --epochs 1
+bash scripts/colab_run.sh extract_embeddings --run-name colab-run --split test
+bash scripts/colab_run.sh train_sae --run-name colab-run --epochs 1
+bash scripts/colab_run.sh analyze --run-name colab-run --split test
+
+# Artifacts download back to ./checkpoints ./embeddings ./runs on this machine.
+# Env overrides: COLAB_GPU (default A100), COLAB_KEEP=1 (leave VM alive).
+```
+
+The wrapper drives: `colab new --gpu` → `colab upload` → `colab exec` (uv run
+scripts/… --hardware colab) → `colab download` → `colab stop`.
+
+Drive persistence: set `CFD_SAE_BASE_DIR` to a mounted Drive path (see
+`colab drivemount`) before running so checkpoints/embeddings survive teardown;
+`--resume` then continues on a later VM.
+
+<details>
+<summary>Legacy notebook flow (still works)</summary>
 
 ```python
 # Cell 1: install uv
 !curl -LsSf https://astral.sh/uv/install.sh | sh
-
 import os
 os.environ["PATH"] = f"/root/.local/bin:{os.environ['PATH']}"
-```
 
-```python
 # Cell 2: clone + install
 !git clone https://github.com/YOUR_USERNAME/cfd-sae /content/cfd-sae
 %cd /content/cfd-sae
 !uv sync
-```
 
-```python
 # Cell 3: run (example)
 !uv run python scripts/train_mgn.py --hardware colab --run-name colab-smoke --epochs 1
 ```
-
-If you want data/checkpoints on Drive, set `CFD_SAE_BASE_DIR` to a mounted Drive
-path before running scripts.
+</details>
 
 ## Hardware Presets
 

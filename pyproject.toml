@@ -18,6 +18,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "ruff>=0.15.0",
+    "google-colab-cli>=0.0.14",
 ]
 
 [tool.ruff]
