@@ -1,7 +1,7 @@
 [project]
 name = "cfd-interpretability"
 version = "0.1.0"
-description = "Add your description here"
+description = "Resumable, Colab-first CFD interpretability pipeline: train MeshGraphNet, extract embeddings, train an SAE, analyze."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -14,3 +14,19 @@ dependencies = [
     "torch-geometric>=2.7.0",
     "tqdm>=4.67.3",
 ]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
+"scripts/*" = ["E402"]
