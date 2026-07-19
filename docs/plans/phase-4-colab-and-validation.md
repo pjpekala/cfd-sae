@@ -63,6 +63,9 @@ tears down. Our scripts are unchanged (`--hardware colab` + `uv run` contract).
 - [x] `scripts/colab_run.sh` wrapper implemented + bash syntax checked.
 - [x] `google-colab-cli` added to dev deps; `uv sync` installs it.
 - [x] README Colab quickstart updated (CLI primary).
+- [x] `notebooks/05_analysis.ipynb` interactive SAE explorer (executes end-to-end,
+      reuses `src.visualize` + `scripts.analyze`; Top-K bars, histograms, spatial
+      activation). `src/visualize.py` holds the shared plotting.
 - [ ] Real Colab VM run validated (fresh + resume).
 - [ ] Full pipeline outputs validated end-to-end on Colab.
-- [ ] (Optional) notebooks parity.
+- [ ] (Optional) training notebooks 01-04 (colab-cli covers training).

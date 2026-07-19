@@ -140,6 +140,19 @@ Expected files:
 - `data/valid.tfrecord`
 - `data/test.tfrecord`
 
+## Interactive Analysis (Notebooks)
+
+After training (`train_mgn` → `extract_embeddings` → `train_sae`), explore the
+SAE interactively in `notebooks/05_analysis.ipynb`:
+
+- Rank Top-K salient latents by the three Table-1 scores (Variance, MeanAbs, Entropy).
+- Inspect any latent's activation histogram.
+- Visualize a latent's **spatial activation** on the most-activated frame.
+
+Open it in Jupyter/Colab. It reuses `src/visualize.py` (shared plotting) and the
+existing `scripts.analyze` functions — no duplicated logic. Set the `run_name`
+widget to the run you want to explore.
+
 ## Script Entry Points (Phase-1 Scaffolding)
 
 - `scripts/train_mgn.py`

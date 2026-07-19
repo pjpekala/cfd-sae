@@ -19,6 +19,7 @@ dependencies = [
 dev = [
     "ruff>=0.15.0",
     "google-colab-cli>=0.0.14",
+    "ipywidgets>=8.1.0",
 ]
 
 [tool.ruff]
@@ -31,3 +32,4 @@ select = ["E", "F", "I", "W"]
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
 "scripts/*" = ["E402"]
+"scripts/_gen_notebook.py" = ["E501"]
