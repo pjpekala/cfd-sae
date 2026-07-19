@@ -1,0 +1,11 @@
+torch>=2.1.0
+torch_geometric
+pyyaml
+numpy
+matplotlib
+scipy
+tfrecord
+tqdm
+
+# Install platform-specific PyG sparse deps separately when needed.
+# See README for details.

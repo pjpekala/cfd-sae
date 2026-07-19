@@ -1,0 +1,12 @@
+batch_size: 1
+num_workers: 2
+pin_memory: true
+mgn:
+  hidden_dim: 128
+  message_passing_steps: 9
+  epochs: 25
+sae:
+  expansion: 8
+  lambda_l1: 3.0e-4
+  batch_size: 128
+  lr: 1.0e-4
