@@ -107,6 +107,68 @@ All scripts support:
 - `macbook` on Darwin hosts
 - `desktop` otherwise
 
+## Command Reference (per machine)
+
+The pipeline is four stages that chain on a shared `--run-name`:
+`train_mgn` → `extract_embeddings` → `train_sae` → `analyze`.
+Pick a stable run name so artifacts line up. `--resume` continues
+`train_mgn`/`train_sae` (needs explicit `--run-name`).
+
+### MacBook
+
+```bash
+uv sync
+uv run python scripts/download_data.py --data-dir data --skip-existing   # once
+
+uv run python scripts/train_mgn.py         --hardware macbook --run-name myrun --epochs 5
+uv run python scripts/extract_embeddings.py --hardware macbook --run-name myrun --split test
+uv run python scripts/train_sae.py         --hardware macbook --run-name myrun --epochs 5
+uv run python scripts/analyze.py           --hardware macbook --run-name myrun --split test
+```
+
+### Personal PC (desktop preset)
+
+```bash
+uv sync
+uv run python scripts/download_data.py --data-dir data --skip-existing   # once
+
+uv run python scripts/train_mgn.py         --hardware desktop --run-name myrun --epochs 50
+uv run python scripts/extract_embeddings.py --hardware desktop --run-name myrun --split test
+uv run python scripts/train_sae.py         --hardware desktop --run-name myrun --epochs 50
+uv run python scripts/analyze.py           --hardware desktop --run-name myrun --split test
+```
+
+### Colab (google-colab-cli — provisions GPU VM, runs, downloads, tears down)
+
+```bash
+uv tool install google-colab-cli                                         # once
+
+bash scripts/colab_run.sh train_mgn         --run-name myrun --epochs 25
+bash scripts/colab_run.sh extract_embeddings --run-name myrun --split test
+bash scripts/colab_run.sh train_sae         --run-name myrun --epochs 25
+bash scripts/colab_run.sh analyze           --run-name myrun --split test
+# Env overrides: COLAB_GPU (default A100), COLAB_KEEP=1 (leave VM alive).
+# For persistence across teardown: set CFD_SAE_BASE_DIR to a mounted Drive path,
+# then re-run stages with --resume.
+```
+
+### Notebooks (interactive analysis — no training)
+
+`notebooks/05_analysis.ipynb` loads an **existing** run's SAE checkpoint +
+embeddings and visualizes it (Top-K latents, histograms, spatial activation).
+It does NOT train.
+
+```bash
+# Local
+jupyter lab                      # or: jupyter notebook
+# open notebooks/05_analysis.ipynb, set the run_name + split widgets, run all cells
+
+# Colab
+# upload the .ipynb (or git clone + uv sync in a Colab runtime), then open it.
+```
+
+Prereq for interactivity: `ipywidgets` (a dev dep, installed by `uv sync`).
+
 ## Run Isolation and Resume Contract
 
 Every run is isolated under a run name.
