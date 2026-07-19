@@ -93,6 +93,7 @@ class Env:
     ckpt_root: Path
     embed_root: Path
     ckpt_dir: Path
+    sae_ckpt_dir: Path
     embed_dir: Path
     run_dir: Path
     run_name: str
@@ -148,6 +149,7 @@ def get_env(
         ckpt_root=ckpt_root,
         embed_root=embed_root,
         ckpt_dir=ckpt_root / resolved_run_name,
+        sae_ckpt_dir=ckpt_root / resolved_run_name / "sae",
         embed_dir=embed_root / resolved_run_name,
         run_dir=run_root / resolved_run_name,
         run_name=resolved_run_name,

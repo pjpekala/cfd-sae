@@ -47,7 +47,24 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_all_codes(embed_dir: Path, split: str, sae_run_dir: Path) -> np.ndarray:
+def load_normalizer(embed_dir: Path) -> tuple[np.ndarray, np.ndarray] | None:
+    p = embed_dir / "embedding_stats.npz"
+    if not p.exists():
+        return None
+    blob = np.load(p)
+    return blob["mean"].astype("float32"), blob["std"].astype("float32")
+
+
+def normalize(arr: np.ndarray, stats: tuple[np.ndarray, np.ndarray] | None) -> np.ndarray:
+    if stats is None:
+        return arr
+    mean, std = stats
+    return (arr - mean) / std
+
+
+def load_all_codes(
+    embed_dir: Path, split: str, sae_run_dir: Path
+) -> tuple[np.ndarray, tuple[np.ndarray, np.ndarray] | None]:
     d = embed_dir / split
     if not d.exists():
         raise FileNotFoundError(f"No embeddings at {d}.")
@@ -60,22 +77,21 @@ def load_all_codes(embed_dir: Path, split: str, sae_run_dir: Path) -> np.ndarray
     if ckpt is None:
         raise FileNotFoundError(f"No SAE checkpoint in {sae_run_dir}.")
     first = np.load(paths[0])
-    sae = SparseAutoencoder(
-        SAEConfig(input_dim=int(first.shape[1]))
-    )
+    sae = SparseAutoencoder(SAEConfig(input_dim=int(first.shape[1])))
     sae.load_state_dict(ckpt["model_state"])
     sae.eval()
 
+    stats = load_normalizer(embed_dir)
     import torch
 
     codes_chunks = []
     with torch.no_grad():
         for p in paths:
             arr = np.load(p).astype("float32")
-            x = torch.as_tensor(arr)
+            x = torch.as_tensor(normalize(arr, stats))
             z = sae.encode(x)
             codes_chunks.append(z.numpy())
-    return np.concatenate(codes_chunks, axis=0)  # [M, hidden]
+    return np.concatenate(codes_chunks, axis=0), stats  # [M, hidden]
 
 
 def salient_scores(z: np.ndarray, bins: int) -> dict[str, np.ndarray]:
@@ -101,8 +117,8 @@ def main() -> None:
     write_resolved_config(env, config)
     _ = write_run_metadata(env, vars(args), config, stage="analyze")
 
-    # SAE checkpoint lives under the same run-name (train_sae used this run).
-    sae_run_dir = env.ckpt_dir
+    # SAE checkpoint lives under the same run-name, in the sae subdir.
+    sae_run_dir = env.sae_ckpt_dir
     ckpt = load_latest(sae_run_dir)
     if ckpt is None:
         raise FileNotFoundError(f"No SAE checkpoint in {sae_run_dir}. Train SAE first.")
@@ -117,12 +133,15 @@ def main() -> None:
 
     import torch
 
-    z_all = load_all_codes(env.embed_dir, args.split, sae_run_dir)
+    z_all, stats = load_all_codes(env.embed_dir, args.split, sae_run_dir)
     M, hidden = z_all.shape
 
-    # Reconstruction metrics on a sample of codes.
+    # Reconstruction metrics on the (normalized) embeddings the SAE was trained on.
     x_all = np.concatenate(
-        [np.load(p).astype("float32") for p in sorted((env.embed_dir / args.split).glob("*.npy"))],
+        [
+            normalize(np.load(p).astype("float32"), stats)
+            for p in sorted((env.embed_dir / args.split).glob("*.npy"))
+        ],
         axis=0,
     )
     with torch.no_grad():
