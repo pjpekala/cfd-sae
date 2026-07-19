@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-"""Phase-2 smoke training entrypoint for MeshGraphNet.
+"""Phase-3 MGN training entrypoint (resumable).
 
-Trains a real (if tiny) MGN on cylinder-flow next-frame prediction. This is a
-smoke loop: single-example (single-graph) batches over a capped number of
-frames/steps, with checkpointing and run metadata. It proves the data -> model
--> loss -> backward path works end to end on real data; it does NOT aim for
-convergence.
+Trains the MeshGraphNet on next-frame prediction over a split, with periodic
++ best checkpointing and --resume support (restores model + optimizer +
+global_step and continues). Single-graph (single-example) batches because node
+count N varies per example/split.
 
 Run:
-    uv run python scripts/train_mgn.py --hardware macbook --run-name smoke-mgn \
-        --epochs 1 --max-steps 5
+    uv run python scripts/train_mgn.py --hardware macbook --run-name train-mgn \
+        --epochs 1
+    uv run python scripts/train_mgn.py --hardware macbook --run-name train-mgn \
+        --resume
 """
 
 from __future__ import annotations
@@ -33,18 +34,17 @@ from src.config import (
 )
 from src.env import get_env
 from src.models.mgn import MeshGraphNet, MGNConfig
-from src.utils.checkpoint import save_checkpoint
+from src.utils.checkpoint import load_latest, save_checkpoint
 from src.utils.seed import set_seed
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train MGN (phase-2 smoke).")
+    parser = argparse.ArgumentParser(description="Train MGN (phase-3).")
     add_common_args(parser, include_resume=True)
-    parser.add_argument("--epochs", type=int, default=None, help="Optional epoch override.")
-    parser.add_argument("--max-steps", type=int, default=5, help="Max optimizer steps.")
+    parser.add_argument("--epochs", type=int, default=None, help="Epoch override.")
+    parser.add_argument("--max-steps", type=int, default=None, help="Optional step cap (smoke).")
     parser.add_argument(
-        "--frames-per-example", type=int, default=4,
-        help="Frames sampled per example for the smoke loop.",
+        "--save-every", type=int, default=200, help="Checkpoint every N global steps."
     )
     return parser.parse_args()
 
@@ -64,15 +64,21 @@ def to_tensors(sample, device: str):
     )
 
 
+def build_sample_dataset(data_dir: Path, split: str):
+    """Yield (frame) GraphSamples across all examples/frames of a split."""
+    from src.data.cylinder_flow import build_sample, split_reader
+
+    for example in split_reader(data_dir, split):
+        n_frames = example["velocity"].shape[0]
+        for fr in range(n_frames - 1):
+            yield build_sample(example, frame=fr)
+
+
 def main() -> None:
     args = parse_args()
     env = get_env(
-        hardware=args.hardware,
-        run_name=args.run_name,
-        stage="mgn",
-        seed=args.seed,
+        hardware=args.hardware, run_name=args.run_name, stage="mgn", seed=args.seed
     )
-
     if args.resume and env.run_name_generated:
         raise ValueError("--resume requires an explicit --run-name or CFD_SAE_RUN_NAME.")
 
@@ -85,10 +91,8 @@ def main() -> None:
 
     set_seed(args.seed)
 
-    config_path = write_resolved_config(env, config)
-    metadata_path = write_run_metadata(env, vars(args), config, stage="train_mgn")
-
-    from src.data.cylinder_flow import build_sample, split_reader
+    write_resolved_config(env, config)
+    _ = write_run_metadata(env, vars(args), config, stage="train_mgn")
 
     cfg = MGNConfig(
         hidden_dim=int(config.get("mgn", {}).get("hidden_dim", 128)),
@@ -99,58 +103,75 @@ def main() -> None:
     model = MeshGraphNet(cfg).to(env.device)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
-    print(f"[phase-2] MGN model built: {sum(p.numel() for p in model.parameters()):,} params")
+    start_step = 0
+    best_loss = float("inf")
+    if args.resume:
+        ckpt = load_latest(env.ckpt_dir)
+        if ckpt is not None:
+            model.load_state_dict(ckpt["model_state"])
+            optimizer.load_state_dict(ckpt["optimizer_state"])
+            start_step = int(ckpt.get("global_step", 0))
+            best_loss = float(ckpt.get("best_loss", float("inf")))
+            print(f"[resume] restored global_step={start_step} best_loss={best_loss:.6f}")
+
+    print(f"[train] MGN params: {sum(p.numel() for p in model.parameters()):,}")
     print(f"hardware={env.hardware} device={env.device} run_name={env.run_name}")
-    print(f"config={config_path}")
-    print(f"metadata={metadata_path}")
 
+    dataset = build_sample_dataset(env.data_dir, "valid")
     model.train()
-    global_step = 0
-    total_loss = 0.0
+    global_step = start_step
     nan_seen = False
+    epoch = 0
 
-    for ex_i, example in enumerate(split_reader(env.data_dir, "valid", max_examples=2)):
-        n_frames = example["velocity"].shape[0]
-        frames = list(range(0, min(args.frames_per_example, n_frames - 1)))
-        for fr in frames:
-            if global_step >= args.max_steps:
+    for epoch in range(1, (args.epochs or config.get("mgn", {}).get("epochs", 1)) + 1):
+        for sample in dataset:
+            if args.max_steps is not None and (global_step - start_step) >= args.max_steps:
                 break
-            sample = build_sample(example, frame=fr)
             nf, ei, ea, tv, tp = to_tensors(sample, env.device)
-
             optimizer.zero_grad()
             pred_vel, pred_pres = model(nf, ei, ea)
             loss = model.loss(pred_vel, pred_pres, tv, tp)
             if torch.isnan(loss):
                 nan_seen = True
-                print(f"[WARN] NaN loss at example {ex_i} frame {fr}")
+                print("[WARN] NaN loss; skipping step")
                 continue
             loss.backward()
             optimizer.step()
 
             global_step += 1
-            total_loss += float(loss.item())
-            print(f"step {global_step:03d} | ex={ex_i} fr={fr} | loss={loss.item():.6f}")
+            if global_step % 20 == 0:
+                print(f"epoch={epoch} step={global_step} loss={loss.item():.6f}")
 
-        if global_step >= args.max_steps:
+            if loss.item() < best_loss:
+                best_loss = loss.item()
+                is_best = True
+            else:
+                is_best = False
+
+            if global_step % args.save_every == 0:
+                ckpt = {
+                    "global_step": global_step,
+                    "epoch": epoch,
+                    "best_loss": best_loss,
+                    "model_state": model.state_dict(),
+                    "optimizer_state": optimizer.state_dict(),
+                    "rng": None,
+                }
+                save_checkpoint(ckpt, env.ckpt_dir, epoch=epoch, is_best=is_best)
+        if args.max_steps is not None and (global_step - start_step) >= args.max_steps:
             break
 
-    if global_step == 0:
-        raise RuntimeError("No training steps executed; check data path / max_steps.")
-
-    # Save a smoke checkpoint (epoch 0; current global_step).
+    # Final checkpoint.
     ckpt = {
         "global_step": global_step,
-        "epoch": 0,
+        "epoch": epoch,
+        "best_loss": best_loss,
         "model_state": model.state_dict(),
         "optimizer_state": optimizer.state_dict(),
         "rng": None,
     }
-    ckpt_path = save_checkpoint(ckpt, env.ckpt_dir, epoch=0, is_best=False, keep_last=3)
-
-    print("[phase-2] Smoke training complete.")
-    print(f"  steps={global_step} mean_loss={total_loss / max(global_step, 1):.6f}")
-    print(f"  nan_seen={nan_seen}")
+    ckpt_path = save_checkpoint(ckpt, env.ckpt_dir, epoch=epoch, is_best=True)
+    print(f"[train] done. steps={global_step} best_loss={best_loss:.6f} nan={nan_seen}")
     print(f"  checkpoint={ckpt_path}")
 
 

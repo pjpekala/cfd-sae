@@ -35,12 +35,17 @@ class MGNConfig:
 
 
 def _mlp(in_dim: int, out_dim: int, hidden: int, layers: int) -> "nn.Module":
+    """Residual MLP block with two hidden layers + LayerNorm (per paper §4.2)."""
     assert nn is not None
     if layers <= 1:
-        return nn.Linear(in_dim, out_dim)
-    parts: list[nn.Module] = [nn.Linear(in_dim, hidden), nn.ReLU()]
+        return nn.Sequential(nn.Linear(in_dim, out_dim), nn.LayerNorm(out_dim))
+    parts: list[nn.Module] = [
+        nn.Linear(in_dim, hidden),
+        nn.ReLU(),
+        nn.LayerNorm(hidden),
+    ]
     for _ in range(layers - 2):
-        parts += [nn.Linear(hidden, hidden), nn.ReLU()]
+        parts += [nn.Linear(hidden, hidden), nn.ReLU(), nn.LayerNorm(hidden)]
     parts.append(nn.Linear(hidden, out_dim))
     return nn.Sequential(*parts)
 
@@ -71,6 +76,44 @@ if nn is not None:
                 src,
             )
 
+        def _latent(
+            self,
+            node_features: "torch.Tensor",
+            edge_index: "torch.Tensor",
+            edge_attr: "torch.Tensor",
+        ) -> "torch.Tensor":
+            """Run encode + message passing, return pre-decoder node embeddings h_i.
+
+            This is the frozen embedding the SAE trains on (paper §3.2).
+            """
+            n_nodes = node_features.shape[0]
+            src_idx = edge_index[0]
+            dst_idx = edge_index[1]
+
+            h_node = self.node_encoder(node_features)        # [N, h]
+            h_edge = self.edge_encoder(edge_attr)           # [E, h]
+
+            for _ in range(self.cfg.message_passing_steps):
+                # Messages from source node features to each edge.
+                src_h = h_node[src_idx]                      # [E, h]
+                edge_input = torch.cat([src_h, h_edge, h_node[dst_idx]], dim=-1)  # [E, 3h]
+                msg = self.edge_mlp(edge_input)             # [E, h]
+                aggregated = self._scatter_sum(msg, dst_idx, n_nodes)  # [N, h]
+                node_input = torch.cat([h_node, aggregated], dim=-1)   # [N, 2h]
+                updated = self.node_mlp(node_input)          # [N, h]
+                h_node = h_node + updated                    # residual
+
+            return h_node  # [N, hidden]
+
+        def node_embeddings(
+            self,
+            node_features: "torch.Tensor",
+            edge_index: "torch.Tensor",
+            edge_attr: "torch.Tensor",
+        ) -> "torch.Tensor":
+            """Pre-decoder node embeddings (paper's h_i) for SAE training."""
+            return self._latent(node_features, edge_index, edge_attr)
+
         def forward(
             self,
             node_features: "torch.Tensor",
@@ -93,23 +136,7 @@ if nn is not None:
                     f"got {tuple(edge_attr.shape)}"
                 )
 
-            n_nodes = node_features.shape[0]
-            src_idx = edge_index[0]
-            dst_idx = edge_index[1]
-
-            h_node = self.node_encoder(node_features)        # [N, h]
-            h_edge = self.edge_encoder(edge_attr)           # [E, h]
-
-            for _ in range(self.cfg.message_passing_steps):
-                # Messages from source node features to each edge.
-                src_h = h_node[src_idx]                      # [E, h]
-                edge_input = torch.cat([src_h, h_edge, h_node[dst_idx]], dim=-1)  # [E, 3h]
-                msg = self.edge_mlp(edge_input)             # [E, h]
-                aggregated = self._scatter_sum(msg, dst_idx, n_nodes)  # [N, h]
-                node_input = torch.cat([h_node, aggregated], dim=-1)   # [N, 2h]
-                updated = self.node_mlp(node_input)          # [N, h]
-                h_node = h_node + updated                    # residual
-
+            h_node = self._latent(node_features, edge_index, edge_attr)
             vel = self.velocity_head(h_node)                # [N, 2]
             pres = self.pressure_head(h_node).squeeze(-1)   # [N]
             return vel, pres

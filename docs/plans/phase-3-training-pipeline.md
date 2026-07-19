@@ -76,7 +76,23 @@ Optional stage-specific limits for smoke tests:
 
 ## Exit Checklist
 
-- [ ] All scripts share core CLI flags.
-- [ ] Resume path tested under interruption.
-- [ ] Metadata and config snapshots saved per run.
-- [ ] End-to-end smoke run successful.
+- [x] All scripts share core CLI flags.
+- [x] Resume path tested under interruption (kill mid-run -> `--resume` continues from saved global_step; verified global_step 595 -> 600+).
+- [x] Metadata and config snapshots saved per run (`resolved_config.yaml`, run metadata).
+- [x] End-to-end smoke run successful (train -> extract[test] -> train_sae -> analyze, all on real data).
+
+## Implementation Notes (2026-07-19)
+
+- `train_mgn.py`: full epoch loop over valid split, periodic (`--save-every`) + best
+  checkpointing, `--resume` restores model+optimizer+global_step (verified).
+- `extract_embeddings.py`: loads MGN `best.pt`, writes pre-decoder node embeddings
+  h_i (paper's SAE input) as chunked `.npy` per (example,frame) under
+  `embeddings/<run>/<split>/`. Defaults to test split per paper.
+- `train_sae.py`: trains SparseAutoencoder with decoder unit-L2-norm (paper §3.2),
+  batch=128, lambda=3e-4, checkpointing + `--resume`.
+- `analyze.py`: recon MSE, mean-L1, frac-inactive, and Top-K salient latents by the
+  three Table-1 scores (Variance, MeanAbs, Entropy).
+- `src/models/sae.py`: added `normalize_decoder()` (after init + every step).
+- `src/models/mgn.py`: added `node_embeddings()`; MLPs now use LayerNorm + 2 hidden
+  layers (paper §4.2).
+- `src/utils/io.py`: added `read_json`/`read_yaml` + `_require_yaml`.
