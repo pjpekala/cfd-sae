@@ -2,7 +2,7 @@ batch_size: 1
 num_workers: 0
 pin_memory: false
 mgn:
-  hidden_dim: 64
+  hidden_dim: 128
   message_passing_steps: 9
   epochs: 5
 sae:

@@ -122,7 +122,7 @@ uv run python scripts/download_data.py --data-dir data --skip-existing   # once
 
 uv run python scripts/train_mgn.py         --hardware macbook --run-name myrun --epochs 5
 uv run python scripts/extract_embeddings.py --hardware macbook --run-name myrun --split test
-uv run python scripts/train_sae.py         --hardware macbook --run-name myrun --epochs 5
+uv run python scripts/train_sae.py         --hardware macbook --run-name myrun --epochs 50
 uv run python scripts/analyze.py           --hardware macbook --run-name myrun --split test
 ```
 
@@ -168,6 +168,22 @@ jupyter lab                      # or: jupyter notebook
 ```
 
 Prereq for interactivity: `ipywidgets` (a dev dep, installed by `uv sync`).
+
+### SAE early-stopping (paper-faithful)
+
+`train_sae.py` holds out `--val-frac` (default 0.1) of the embedding files as a
+validation set and stops when the held-out reconstruction MSE plateaus
+(paper §4.2: "training proceeds until the reconstruction loss on a held-out
+validation set stops decreasing"). The best-validation weights are restored at
+the end. Tune with `--patience` (epochs w/o improvement, default 5),
+`--min-epochs` (default 1), `--val-frac`, and `--no-val` to disable (fixed
+epochs). Embedding z-score stats are computed over the train subset only.
+
+### Hardware / GPU notes
+
+- All presets now use MGN `hidden_dim: 128` (paper spec). The Colab preset
+  requests `gpu: T4` by default (free-tier compatible); override with
+  `COLAB_GPU=L4` (or `A100` on Pro+), or `COLAB_GPU=` for a CPU runtime.
 
 ## Run Isolation and Resume Contract
 

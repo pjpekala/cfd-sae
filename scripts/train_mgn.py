@@ -117,7 +117,7 @@ def main() -> None:
     print(f"[train] MGN params: {sum(p.numel() for p in model.parameters()):,}")
     print(f"hardware={env.hardware} device={env.device} run_name={env.run_name}")
 
-    dataset = build_sample_dataset(env.data_dir, "valid")
+    dataset = build_sample_dataset(env.data_dir, "train")
     model.train()
     global_step = start_step
     nan_seen = False

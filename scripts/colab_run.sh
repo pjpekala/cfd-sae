@@ -17,7 +17,9 @@
 #   bash scripts/colab_run.sh analyze --run-name colab-run --split test
 #
 # Env overrides:
-#   COLAB_GPU   GPU type passed to `colab new` (default: A100)
+#   COLAB_GPU   GPU type passed to `colab new` (default: from configs/hardware/colab.yaml,
+#               currently T4). Set to any colab-cli value (T4, L4, A100, ...).
+#               Set to empty string (COLAB_GPU= ) for a CPU runtime (no --gpu flag).
 #   COLAB_KEEP  1 = keep the VM alive after running (for interactive follow-up)
 #
 # Artifacts land under checkpoints/ embeddings/ runs/ (same layout as local),
@@ -31,12 +33,21 @@ EXTRA_ARGS=("$@")
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-GPU="${COLAB_GPU:-A100}"
-KEEP="${COLAB_KEEP:-0}"
+# GPU: explicit COLAB_GPU wins; else the colab hardware preset; else T4.
+if [[ -z "${COLAB_GPU+x}" ]]; then
+  # COLAB_GPU unset -> read preset default
+  GPU="$(python3 -c "import sys; sys.path.insert(0,'.'); from src.config import load_hardware_config; print(load_hardware_config('.','colab').get('gpu','T4'))" 2>/dev/null || echo T4)"
+else
+  GPU="$COLAB_GPU"   # may be empty -> CPU runtime
+fi
 
-# 1) Provision a fresh GPU VM (auto-uploads nothing yet -- explicit upload below).
-echo "==> colab new --gpu $GPU"
-colab new --gpu "$GPU"
+# 1) Provision a fresh GPU VM (or CPU runtime when GPU is empty).
+echo "==> colab new${GPU:+ --gpu $GPU}"
+if [[ -n "$GPU" ]]; then
+  colab new --gpu "$GPU"
+else
+  colab new
+fi
 
 # 2) Upload the repo into the VM (colab-cli uploads relative to cwd).
 echo "==> colab upload . /content/cfd-sae"
