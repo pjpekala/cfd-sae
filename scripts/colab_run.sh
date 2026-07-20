@@ -8,37 +8,57 @@
 # `uv run python scripts/<stage>.py --hardware colab`.
 #
 # Usage:
-#   bash scripts/colab_run.sh <stage> [extra args...]
+#   bash scripts/colab_run.sh [--gpu <type>] <stage> [extra args...]
 #
 # Examples:
 #   bash scripts/colab_run.sh train_mgn --run-name colab-run --epochs 1
-#   bash scripts/colab_run.sh extract_embeddings --run-name colab-run --split test
 #   bash scripts/colab_run.sh train_sae --run-name colab-run --epochs 1
-#   bash scripts/colab_run.sh analyze --run-name colab-run --split test
+#   bash scripts/colab_run.sh --gpu L4 train_mgn --run-name colab-run --epochs 1
+#   bash scripts/colab_run.sh --gpu "" train_mgn --run-name colab-run   # CPU runtime
+#
+# GPU selection (precedence: --gpu > COLAB_GPU env > preset default):
+#   default is T4 (from configs/hardware/colab.yaml; free-tier compatible).
+#   --gpu L4 / --gpu A100 (Pro+) override it; --gpu "" (or COLAB_GPU=) -> CPU.
 #
 # Env overrides:
-#   COLAB_GPU   GPU type passed to `colab new` (default: from configs/hardware/colab.yaml,
-#               currently T4). Set to any colab-cli value (T4, L4, A100, ...).
-#               Set to empty string (COLAB_GPU= ) for a CPU runtime (no --gpu flag).
+#   COLAB_GPU   GPU type (alternative to --gpu).
 #   COLAB_KEEP  1 = keep the VM alive after running (for interactive follow-up)
 #
 # Artifacts land under checkpoints/ embeddings/ runs/ (same layout as local),
 # so a later local `analyze.py` can read them, or you can `--resume` on Colab.
 set -euo pipefail
 
-STAGE="${1:?usage: colab_run.sh <stage> [args...]}"
+# Parse an optional leading --gpu [=]value before the stage.
+GPU_FLAG=""
+GPU_FLAG_UNSET=1
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --gpu)
+      GPU_FLAG="${2:-}"; GPU_FLAG_UNSET=0; shift 2;;
+    --gpu=*)
+      GPU_FLAG="${1#--gpu=}"; GPU_FLAG_UNSET=0; shift;;
+    --) shift; break;;
+    *) break;;
+  esac
+done
+
+STAGE="${1:?usage: colab_run.sh [--gpu <type>] <stage> [args...]}"
 shift || true
 EXTRA_ARGS=("$@")
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-# GPU: explicit COLAB_GPU wins; else the colab hardware preset; else T4.
-if [[ -z "${COLAB_GPU+x}" ]]; then
-  # COLAB_GPU unset -> read preset default
-  GPU="$(python3 -c "import sys; sys.path.insert(0,'.'); from src.config import load_hardware_config; print(load_hardware_config('.','colab').get('gpu','T4'))" 2>/dev/null || echo T4)"
+# GPU resolution: explicit --gpu > COLAB_GPU env > colab preset (T4).
+# GPU_FLAG_UNSET == 1 means "--gpu" was NOT passed (distinct from "--gpu ''" = CPU).
+if [[ "$GPU_FLAG_UNSET" == 1 ]]; then
+  if [[ -n "${COLAB_GPU+x}" ]]; then
+    GPU="$COLAB_GPU"   # may be empty -> CPU runtime
+  else
+    GPU="$(python3 -c "import sys; sys.path.insert(0,'.'); from src.config import load_hardware_config; print(load_hardware_config('.','colab').get('gpu','T4'))" 2>/dev/null || echo T4)"
+  fi
 else
-  GPU="$COLAB_GPU"   # may be empty -> CPU runtime
+  GPU="$GPU_FLAG"   # --gpu given (possibly empty -> CPU)
 fi
 
 # 1) Provision a fresh GPU VM (or CPU runtime when GPU is empty).

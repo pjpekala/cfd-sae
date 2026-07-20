@@ -50,14 +50,21 @@ the transport.
 # 1) Install the CLI (one time)
 uv tool install google-colab-cli
 
-# 2) Run a pipeline stage on a fresh A100 VM (auto-provisions + releases)
+# 2) Run a pipeline stage on a fresh GPU VM (auto-provisions + releases).
+#    Defaults to a T4 GPU (free-tier compatible). Override with --gpu or COLAB_GPU.
 bash scripts/colab_run.sh train_mgn --run-name colab-run --epochs 1
 bash scripts/colab_run.sh extract_embeddings --run-name colab-run --split test
 bash scripts/colab_run.sh train_sae --run-name colab-run --epochs 1
 bash scripts/colab_run.sh analyze --run-name colab-run --split test
 
+# Change GPU (Pro+/paid tiers): --gpu flag or COLAB_GPU env
+bash scripts/colab_run.sh --gpu L4 train_mgn --run-name colab-run --epochs 1
+COLAB_GPU=A100 bash scripts/colab_run.sh train_sae --run-name colab-run --epochs 1
+# CPU-only runtime (no GPU):
+bash scripts/colab_run.sh --gpu "" train_mgn --run-name colab-run --epochs 1
+
 # Artifacts download back to ./checkpoints ./embeddings ./runs on this machine.
-# Env overrides: COLAB_GPU (default A100), COLAB_KEEP=1 (leave VM alive).
+# Env overrides: COLAB_KEEP=1 (leave VM alive).
 ```
 
 The wrapper drives: `colab new --gpu` → `colab upload` → `colab exec` (uv run
@@ -90,16 +97,22 @@ os.environ["PATH"] = f"/root/.local/bin:{os.environ['PATH']}"
 
 Hardware preset YAMLs live in `configs/hardware/`:
 
-- `colab.yaml`
+- `colab.yaml` — also sets `gpu: T4` (the Colab VM GPU; override via `--gpu`/COLAB_GPU)
 - `desktop.yaml`
 - `macbook.yaml`
 
-All scripts support:
+All three use MGN `hidden_dim: 128` and 9 message-passing steps (paper spec).
+Tune epochs, batch size, SAE `expansion`/`lambda_l1`/`lr` here.
+
+Common script flags (all stages):
 
 - `--hardware {auto,colab,desktop,macbook}`
-- `--run-name <name>`
+- `--run-name <name>` (artifacts isolated per run)
 - `--seed <int>`
-- `--resume` (except analysis)
+- `--resume` (continues `train_mgn`/`train_sae`; needs explicit `--run-name`)
+- `--epochs <int>` / `--max-steps <int>` (cap work for smoke tests)
+- `train_sae` only: `--val-frac`, `--patience`, `--min-epochs`, `--no-val`
+  (see "SAE early-stopping" below)
 
 `auto` resolves to:
 
@@ -143,13 +156,18 @@ uv run python scripts/analyze.py           --hardware desktop --run-name myrun -
 ```bash
 uv tool install google-colab-cli                                         # once
 
+# Defaults to a T4 GPU (free-tier). Override with --gpu or COLAB_GPU.
 bash scripts/colab_run.sh train_mgn         --run-name myrun --epochs 25
 bash scripts/colab_run.sh extract_embeddings --run-name myrun --split test
 bash scripts/colab_run.sh train_sae         --run-name myrun --epochs 25
 bash scripts/colab_run.sh analyze           --run-name myrun --split test
-# Env overrides: COLAB_GPU (default A100), COLAB_KEEP=1 (leave VM alive).
+
+# Different GPU (Pro+/paid):
+bash scripts/colab_run.sh --gpu L4 train_sae --run-name myrun --epochs 25
+# CPU-only (no GPU):  bash scripts/colab_run.sh --gpu "" train_mgn --run-name myrun
+
 # For persistence across teardown: set CFD_SAE_BASE_DIR to a mounted Drive path,
-# then re-run stages with --resume.
+# then re-run stages with --resume. COLAB_KEEP=1 leaves the VM alive.
 ```
 
 ### Notebooks (interactive analysis — no training)
