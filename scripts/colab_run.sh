@@ -7,6 +7,10 @@
 # untouched -- colab-cli is just the transport; everything still runs via
 # `uv run python scripts/<stage>.py --hardware colab`.
 #
+# NOTE: google-colab-cli's `upload`/`download` move a SINGLE file, and `exec`
+# runs PYTHON code (not a shell). So we tar the repo + artifacts and shell out
+# from Python via subprocess. That is the contract this wrapper honors.
+#
 # Usage:
 #   bash scripts/colab_run.sh [--gpu <type>] <stage> [extra args...]
 #
@@ -61,6 +65,19 @@ else
   GPU="$GPU_FLAG"   # --gpu given (possibly empty -> CPU)
 fi
 
+KEEP="${COLAB_KEEP:-0}"
+
+# Scratch files (kept off the repo).
+TARBALL="$(mktemp /tmp/cfd-sae-repo-XXXXXX.tgz)"
+RUNNER="$(mktemp /tmp/cfd-sae-runner-XXXXXX.py)"
+ARTIFACTS="$(mktemp /tmp/cfd-sae-artifacts-XXXXXX.tgz)"
+REMOTE_TARBALL=/content/cfd-sae.tgz
+REMOTE_RUNNER=/content/cfd-sae/_colab_runner.py
+REMOTE_ARTIFACTS=/content/cfd-sae/_artifacts.tgz
+VM_DIR=/content/cfd-sae
+cleanup() { rm -f "$TARBALL" "$RUNNER" "$ARTIFACTS"; }
+trap cleanup EXIT
+
 # 1) Provision a fresh GPU VM (or CPU runtime when GPU is empty).
 echo "==> colab new${GPU:+ --gpu $GPU}"
 if [[ -n "$GPU" ]]; then
@@ -69,17 +86,55 @@ else
   colab new
 fi
 
-# 2) Upload the repo into the VM (colab-cli uploads relative to cwd).
-echo "==> colab upload . /content/cfd-sae"
-colab upload . /content/cfd-sae
+# 2) Package the repo (exclude heavy / ignored dirs) and upload + unpack.
+echo "==> packaging repo (excluding .venv/data/checkpoints/embeddings/runs/.git)"
+tar czf "$TARBALL" \
+  --exclude=.venv --exclude=data --exclude=checkpoints \
+  --exclude=embeddings --exclude=runs --exclude=.git \
+  --exclude=.ruff_cache --exclude='__pycache__' --exclude='*.pyc' \
+  -C "$REPO_ROOT" .
 
-# 3) Run the requested stage on the VM.
-echo "==> colab exec: train stage=$STAGE"
-colab exec "cd /content/cfd-sae && uv sync && uv run python scripts/$STAGE.py --hardware colab ${EXTRA_ARGS[*]:-}"
+echo "==> colab upload $TARBALL $REMOTE_TARBALL"
+colab upload "$TARBALL" "$REMOTE_TARBALL"
 
-# 4) Pull artifacts back. checkpoints/ embeddings/ runs/ mirror the local layout.
-echo "==> colab download checkpoints embeddings runs ./"
-colab download checkpoints embeddings runs ./
+echo "==> colab exec: unpack repo into $VM_DIR"
+# exec runs PYTHON. Unpack the tarball via subprocess.
+printf 'import subprocess\nsubprocess.run(["tar","xzf","%s","-C","/content"],check=True)\n' "$REMOTE_TARBALL" | colab exec
+
+# 3) Build a Python runner that shells out the stage (download data if needed).
+#    Stages other than `analyze` need the dataset; fetch it on the VM.
+NEEDS_DATA=1
+[[ "$STAGE" == "analyze" ]] && NEEDS_DATA=0
+RUN_CMD="cd $VM_DIR && uv sync"
+if [[ "$NEEDS_DATA" == 1 ]]; then
+  RUN_CMD="$RUN_CMD && uv run python scripts/download_data.py --data-dir data --skip-existing"
+fi
+RUN_CMD="$RUN_CMD && uv run python scripts/$STAGE.py --hardware colab ${EXTRA_ARGS[*]:-}"
+
+# Write the runner (unquoted heredoc so RUN_CMD expands; it contains no ''').
+cat > "$RUNNER" <<EOF
+import subprocess
+cmd = r'''${RUN_CMD}'''
+print(">>", cmd)
+subprocess.run(cmd, shell=True, check=True)
+EOF
+
+echo "==> colab upload $RUNNER $REMOTE_RUNNER"
+colab upload "$RUNNER" "$REMOTE_RUNNER"
+echo "==> colab exec --file $REMOTE_RUNNER"
+colab exec --file "$REMOTE_RUNNER"
+
+# 4) Pull artifacts back. Tar them on the VM, download the tarball, unpack.
+echo "==> colab exec: tar artifacts on VM"
+printf 'import subprocess\nsubprocess.run("tar czf %s -C %s checkpoints embeddings runs", shell=True, check=True)\n' \
+  "$REMOTE_ARTIFACTS" "$VM_DIR" | colab exec
+
+echo "==> colab download $REMOTE_ARTIFACTS $ARTIFACTS"
+colab download "$REMOTE_ARTIFACTS" "$ARTIFACTS"
+
+echo "==> unpacking artifacts into $REPO_ROOT"
+mkdir -p "$REPO_ROOT"
+tar xzf "$ARTIFACTS" -C "$REPO_ROOT"
 
 if [[ "$KEEP" == "1" ]]; then
   echo "==> COLAB_KEEP=1: VM left running. Resume with 'colab exec ...' or stop with 'colab stop'."
