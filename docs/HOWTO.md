@@ -516,8 +516,58 @@ No notebooks required.
 
 ```bash
 uv tool install google-colab-cli
-colab auth
 ```
+
+See "Authentication & Drive account" below before provisioning a VM.
+
+### Authentication & Drive account
+
+The Drive mounted by `colab.sh drive` / `colab drivemount` belongs to the
+**Google account the CLI is authenticated as** — not the VM's account. Check it
+before downloading data (so ~16 GB lands in the right account's quota):
+
+```bash
+colab whoami          # hidden debug cmd: active email, scopes, expiry
+```
+
+`colab auth` is unrelated to CLI authentication — it injects *VM-side* GCP
+credentials (BigQuery/GCS). Don't use it to "log in" the CLI.
+
+The CLI supports two auth strategies; the flag goes **before** the subcommand.
+
+#### oauth2 (default)
+
+One-time browser consent flow; token cached at `~/.config/colab-cli/token.json`.
+To switch accounts:
+
+```bash
+rm ~/.config/colab-cli/token.json     # clear cache
+colab whoami                          # re-opens browser; pick the new account
+```
+
+If a VM was already provisioned under the old account, stop it before switching
+(it stays reachable only under that account):
+
+```bash
+colab stop -s cfd
+```
+
+#### adc (Application Default Credentials)
+
+Recommended when the target Drive lives in a specific account (e.g., a student
+account with more space). Authenticate gcloud ADC as that account with **all
+four** scopes the Colab backend requires — a plain
+`gcloud auth application-default login` is missing `colaboratory`, which makes
+`colab new` 403 and unassigns the fresh VM:
+
+```bash
+gcloud auth application-default login \
+  --scopes=openid,https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/userinfo.email,https://www.googleapis.com/auth/colaboratory
+```
+
+`colab.sh` does **not** pass `--auth` (it uses the default oauth2), so with ADC
+you drive the VM with raw `colab --auth=adc ...` commands — see "Using ADC (raw
+commands)" below.
 
 ### Provision + mount Drive (one time per VM)
 
@@ -582,6 +632,55 @@ Override at VM creation time:
 bash scripts/colab.sh new --gpu L4      # Colab Pro+
 bash scripts/colab.sh new --gpu A100    # Colab Pro+ (higher tiers)
 bash scripts/colab.sh new --gpu CPU     # CPU-only runtime
+```
+
+### Using ADC (raw commands)
+
+If you authenticate via ADC (`--auth=adc`), bypass `colab.sh` (it uses the
+default oauth2) and drive the VM directly. Every command needs `--auth=adc`
+before the subcommand, and you must use it consistently — the keep-alive daemon
+inherits the auth used at `colab new`, and mixing strategies is unreliable.
+
+```bash
+# Verify identity + scopes
+colab --auth=adc whoami
+
+# Provision + mount Drive (this mounts the ADC account's Drive)
+colab --auth=adc new -s cfd --gpu T4
+colab --auth=adc drivemount -s cfd
+colab --auth=adc ls -s cfd /content/drive/MyDrive     # confirm the account's Drive
+
+# Sync repo + deps
+colab --auth=adc exec -s cfd --timeout 600 <<'PY'
+import os, shutil, subprocess
+vm = '/content/cfd-sae'
+repo = 'https://github.com/pjpekala/cfd-sae.git'
+if not os.path.isdir(vm):
+    subprocess.run(['git', 'clone', '--depth', '1', repo, vm], check=True)
+else:
+    subprocess.run(['git', '-C', vm, 'pull', '--ff-only'], check=True)
+if shutil.which('uv') is None:
+    subprocess.run('curl -LsSf https://astral.sh/uv/install.sh | sh', shell=True, check=True)
+    os.environ['PATH'] = os.path.expanduser('~/.local/bin') + os.pathsep + os.environ.get('PATH', '')
+subprocess.run(['bash', '-lc', 'cd /content/cfd-sae && uv sync'], check=True)
+PY
+
+# Download data into the mounted Drive (~16 GB)
+printf 'import subprocess; subprocess.run("cd /content/cfd-sae && uv run python scripts/download_data.py --data-dir /content/drive/MyDrive/cfd-sae/data --skip-existing", shell=True, check=True)\n' \
+  | colab --auth=adc exec -s cfd --timeout 3600
+
+# Run a pipeline stage (same pattern for extract_embeddings / train_sae / analyze)
+printf 'import subprocess; subprocess.run("cd /content/cfd-sae && uv run python scripts/train_mgn.py --hardware colab --run-name myrun --epochs 25", shell=True, check=True)\n' \
+  | colab --auth=adc exec -s cfd --timeout 3600
+
+# Pull a run's artifacts back to this machine (optional — Drive is the source of truth)
+printf 'import subprocess; subprocess.run("tar czf /content/cfd-sae-myrun.tgz -C /content/drive/MyDrive/cfd-sae checkpoints/myrun embeddings/myrun runs/myrun", shell=True, check=True)\n' \
+  | colab --auth=adc exec -s cfd --timeout 300
+colab --auth=adc download -s cfd /content/cfd-sae-myrun.tgz ./cfd-sae-myrun.tgz
+tar xzf cfd-sae-myrun.tgz -C .
+
+# Release the VM when done
+colab --auth=adc stop -s cfd
 ```
 
 ### Dry-run / debugging

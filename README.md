@@ -47,13 +47,15 @@ via git and artifacts live on Google Drive, so stages chain naturally and
 `--resume` works across sessions. No notebooks required.
 
 ```bash
-# 1) Install the CLI (one time)
+# 1) Install the CLI (one time) + authenticate
 uv tool install google-colab-cli
-colab auth
+#    Authenticate the CLI (see "Authenticating the Colab CLI" below). The mounted
+#    Drive belongs to the Google account the CLI authenticates with.
 
 # 2) Provision + mount Drive (one time per VM)
 bash scripts/colab.sh new          # T4 GPU (free tier); --gpu L4/A100/CPU to change
 bash scripts/colab.sh drive        # approve in browser, press Enter
+#    Verify which account owns the mount first:  colab whoami
 
 # 3) Sync code + deps (clones/pulls this repo; run again after each git push)
 bash scripts/colab.sh sync
@@ -74,6 +76,61 @@ bash scripts/colab.sh stop
 The repo URL is taken from your local `git remote get-url origin` (ssh/git URLs
 are converted to https for the VM's anonymous clone). Override with `--repo-url`
 if needed. Use `--dry-run` to preview any command without executing it.
+
+## Authenticating the Colab CLI
+
+The Colab CLI authenticates to Google with **your** account, and **that account's
+Google Drive is the one mounted** by `colab.sh drive` (not the VM's account).
+Check which account is active:
+
+```bash
+colab whoami          # hidden debug cmd: prints active email, scopes, expiry
+```
+
+> `colab auth` is unrelated to CLI authentication — it injects *VM-side* GCP
+> credentials (BigQuery/GCS). Don't use it to "log in" the CLI.
+
+Two auth strategies exist; the flag must come **before** the subcommand.
+
+### oauth2 (CLI default)
+
+One-time browser consent flow; the token is cached at
+`~/.config/colab-cli/token.json`. To use a different Google account, clear the
+cache and re-run any colab command (pick the account in the browser):
+
+```bash
+rm ~/.config/colab-cli/token.json
+colab whoami
+```
+
+If a VM was already provisioned under the old account, `colab stop -s <name>`
+it first — it stays reachable only under that account.
+
+### adc (Application Default Credentials)
+
+Useful when the target Drive lives in a specific account (e.g., a student
+account with more space). Authenticate gcloud ADC as that account with **all
+four** scopes the Colab backend requires — a plain
+`gcloud auth application-default login` is missing `colaboratory`, which makes
+`colab new` 403 and unassign the fresh VM:
+
+```bash
+gcloud auth application-default login \
+  --scopes=openid,https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/userinfo.email,https://www.googleapis.com/auth/colaboratory
+```
+
+Then prefix every command with `--auth=adc`:
+
+```bash
+colab --auth=adc whoami
+colab --auth=adc new -s cfd --gpu T4
+colab --auth=adc drivemount -s cfd
+```
+
+`scripts/colab.sh` wraps `colab` with the default oauth2 auth and does not pass
+`--auth`. If you authenticate via ADC, drive the VM with raw
+`colab --auth=adc ...` commands instead — see "Using ADC (raw commands)" in
+`docs/HOWTO.md` §8.
 
 <details>
 <summary>Legacy notebook flow (still works)</summary>
@@ -157,7 +214,7 @@ uv run python scripts/analyze.py           --hardware desktop --run-name myrun -
 
 ```bash
 uv tool install google-colab-cli                                         # once
-colab auth
+# Authenticate: oauth2 (default) or adc — see "Authenticating the Colab CLI".
 
 # Provision + mount Drive (one time per VM). Defaults to a T4 GPU (free-tier).
 bash scripts/colab.sh new          # --gpu L4/A100/CPU to change
