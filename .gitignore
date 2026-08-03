@@ -13,7 +13,7 @@ wheels/
 .env
 
 # Runtime artifacts
-data/
+/data/
 checkpoints/
 embeddings/
 runs/
