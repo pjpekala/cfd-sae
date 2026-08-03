@@ -42,27 +42,37 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--max-steps", type=int, default=None, help="Step cap (smoke).")
     parser.add_argument(
-        "--mgn-run", default=None,
+        "--mgn-run",
+        default=None,
         help="Run name whose embeddings to use (default: this run-name).",
     )
     parser.add_argument(
-        "--split", default="test", choices=["train", "valid", "test"],
+        "--split",
+        default="test",
+        choices=["train", "valid", "test"],
         help="Which extracted split to train the SAE on.",
     )
     parser.add_argument(
-        "--val-frac", type=float, default=0.1,
+        "--val-frac",
+        type=float,
+        default=0.1,
         help="Fraction of embedding files held out for early-stopping validation.",
     )
     parser.add_argument(
-        "--patience", type=int, default=5,
+        "--patience",
+        type=int,
+        default=5,
         help="Stop after this many epochs without val-loss improvement.",
     )
     parser.add_argument(
-        "--min-epochs", type=int, default=1,
+        "--min-epochs",
+        type=int,
+        default=1,
         help="Minimum epochs before early-stopping can trigger.",
     )
     parser.add_argument(
-        "--no-val", action="store_true",
+        "--no-val",
+        action="store_true",
         help="Disable early-stopping; run fixed --epochs instead.",
     )
     return parser.parse_args()
@@ -80,9 +90,7 @@ def load_embedding_paths(embed_dir: Path, split: str) -> list[Path]:
     return paths
 
 
-def split_train_val(
-    paths: list[Path], val_frac: float, seed: int
-) -> tuple[list[Path], list[Path]]:
+def split_train_val(paths: list[Path], val_frac: float, seed: int) -> tuple[list[Path], list[Path]]:
     """Deterministic train/val file split (by file, not rows)."""
     import numpy as np
 
@@ -98,8 +106,12 @@ def split_train_val(
 
 @torch.no_grad()
 def evaluate_val(
-    model: "torch.nn.Module", val_paths: list[Path], mean_t: "torch.Tensor",
-    std_t: "torch.Tensor", device: str, max_files: int = 50,
+    model: "torch.nn.Module",
+    val_paths: list[Path],
+    mean_t: "torch.Tensor",
+    std_t: "torch.Tensor",
+    device: str,
+    max_files: int = 50,
 ) -> float:
     """Mean reconstruction MSE over a (subsampled) validation set."""
     model.eval()
@@ -141,10 +153,14 @@ def embedding_norm_path(embed_dir: Path) -> Path:
 def main() -> None:
     args = parse_args()
     env = get_env(
-        hardware=args.hardware, run_name=args.run_name, stage="sae", seed=args.seed
+        hardware=args.hardware,
+        run_name=args.run_name,
+        stage="sae",
+        seed=args.seed,
+        base_dir=Path(args.base_dir) if args.base_dir else None,
     )
     if args.resume and env.run_name_generated:
-        raise ValueError("--resume requires an explicit --run-name or CFD_SAE_RUN_NAME.")
+        raise ValueError("--resume requires an explicit --run-name.")
 
     config = load_hardware_config(env.root, env.hardware)
     if args.epochs is not None:
@@ -157,8 +173,10 @@ def main() -> None:
 
     paths = load_embedding_paths(env.embed_dir, args.split)
     train_paths, val_paths = split_train_val(paths, args.val_frac, seed=args.seed)
-    print(f"[sae] embedding files: {len(paths)} (split={args.split}) "
-          f"train={len(train_paths)} val={len(val_paths)}")
+    print(
+        f"[sae] embedding files: {len(paths)} (split={args.split}) "
+        f"train={len(train_paths)} val={len(val_paths)}"
+    )
 
     # Determine input dim from the first embedding.
     first = np.load(train_paths[0])
@@ -219,9 +237,13 @@ def main() -> None:
 
     def save_sae(is_best: bool, tag: str | None = None) -> None:
         ck = {
-            "global_step": global_step, "epoch": epoch, "best_loss": best_loss,
-            "best_val": best_val, "model_state": model.state_dict(),
-            "optimizer_state": optimizer.state_dict(), "rng": None,
+            "global_step": global_step,
+            "epoch": epoch,
+            "best_loss": best_loss,
+            "best_val": best_val,
+            "model_state": model.state_dict(),
+            "optimizer_state": optimizer.state_dict(),
+            "rng": None,
         }
         save_checkpoint(ck, sae_ckpt_dir, epoch=epoch, is_best=is_best)
         if tag is not None:
@@ -289,8 +311,10 @@ def main() -> None:
                 epochs_since_improve += 1
 
         if not args.no_val and epoch >= args.min_epochs and epochs_since_improve >= args.patience:
-            print(f"[sae] early stop: no val improvement for {epochs_since_improve} epochs "
-                  f"(best_val={best_val:.6f} @ step {best_val_step})")
+            print(
+                f"[sae] early stop: no val improvement for {epochs_since_improve} epochs "
+                f"(best_val={best_val:.6f} @ step {best_val_step})"
+            )
             stopped_early = True
             break
 
@@ -301,8 +325,10 @@ def main() -> None:
         model.load_state_dict(best_ckpt["model_state"])
         print(f"[sae] restored best-val weights (val_mse={best_val:.6f} @ step {best_val_step})")
     save_sae(is_best=True)
-    print(f"[sae] done. steps={global_step} best_train_loss={best_loss:.6f} "
-          f"best_val={best_val:.6f} early_stop={stopped_early}")
+    print(
+        f"[sae] done. steps={global_step} best_train_loss={best_loss:.6f} "
+        f"best_val={best_val:.6f} early_stop={stopped_early}"
+    )
 
 
 if __name__ == "__main__":

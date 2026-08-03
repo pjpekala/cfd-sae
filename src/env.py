@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
-import os
 import platform
 import re
 from dataclasses import dataclass
@@ -68,9 +67,6 @@ def _default_run_name(stage: str, hardware: str, seed: int | None) -> str:
 def _resolve_hardware(requested: str, on_colab: bool) -> str:
     selected = requested
     if selected == "auto":
-        selected = os.getenv("CFD_SAE_HARDWARE", "auto")
-
-    if selected == "auto":
         if on_colab:
             selected = "colab"
         elif platform.system() == "Darwin":
@@ -106,6 +102,7 @@ def get_env(
     run_name: str | None = None,
     stage: str = "run",
     seed: int | None = None,
+    base_dir: Path | None = None,
 ) -> Env:
     """Resolve hardware/device/paths for the current runtime."""
     on_colab = _is_colab()
@@ -113,9 +110,8 @@ def get_env(
 
     root = Path(__file__).resolve().parents[1]
 
-    base_override = os.getenv("CFD_SAE_BASE_DIR")
-    if base_override:
-        base = Path(base_override).expanduser()
+    if base_dir is not None:
+        base = base_dir.expanduser()
     elif resolved_hardware == "colab":
         base = Path("/content/drive/MyDrive/cfd-sae")
     else:
@@ -128,12 +124,10 @@ def get_env(
     else:
         device = _detect_device()
 
-    resolved_run_name = run_name or os.getenv("CFD_SAE_RUN_NAME")
+    resolved_run_name = run_name
     run_name_generated = not bool(resolved_run_name)
     if run_name_generated:
-        resolved_run_name = _default_run_name(
-            stage=stage, hardware=resolved_hardware, seed=seed
-        )
+        resolved_run_name = _default_run_name(stage=stage, hardware=resolved_hardware, seed=seed)
     resolved_run_name = _sanitize_token(resolved_run_name, "run")
 
     data_dir = base / "data"

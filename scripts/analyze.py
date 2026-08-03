@@ -41,9 +41,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--split", default="test", choices=["train", "valid", "test"])
     parser.add_argument("--top-k", type=int, default=20)
     parser.add_argument("--entropy-bins", type=int, default=50)
-    parser.add_argument(
-        "--mgn-run", default=None, help="Run name whose embeddings/SAnE to use."
-    )
+    parser.add_argument("--mgn-run", default=None, help="Run name whose embeddings/SAnE to use.")
     return parser.parse_args()
 
 
@@ -111,7 +109,11 @@ def salient_scores(z: np.ndarray, bins: int) -> dict[str, np.ndarray]:
 def main() -> None:
     args = parse_args()
     env = get_env(
-        hardware=args.hardware, run_name=args.run_name, stage="analysis", seed=args.seed
+        hardware=args.hardware,
+        run_name=args.run_name,
+        stage="analysis",
+        seed=args.seed,
+        base_dir=Path(args.base_dir) if args.base_dir else None,
     )
     config = load_hardware_config(env.root, env.hardware)
     write_resolved_config(env, config)
@@ -177,8 +179,7 @@ def main() -> None:
     write_json(out_path, results)
 
     print(f"[analyze] split={args.split} samples={M} hidden={hidden}")
-    print(f"  recon_mse={recon_mse:.6f} mean_l1={l1_mean:.6f} "
-          f"frac_inactive={frac_inactive:.3f}")
+    print(f"  recon_mse={recon_mse:.6f} mean_l1={l1_mean:.6f} frac_inactive={frac_inactive:.3f}")
     print(f"  Top-{args.top_k} by Variance: {top_k_idx['variance'][:10]} ...")
     print(f"  Top-{args.top_k} by MeanAbs:  {top_k_idx['mean_abs'][:10]} ...")
     print(f"  results={out_path}")

@@ -77,10 +77,14 @@ def build_sample_dataset(data_dir: Path, split: str):
 def main() -> None:
     args = parse_args()
     env = get_env(
-        hardware=args.hardware, run_name=args.run_name, stage="mgn", seed=args.seed
+        hardware=args.hardware,
+        run_name=args.run_name,
+        stage="mgn",
+        seed=args.seed,
+        base_dir=Path(args.base_dir) if args.base_dir else None,
     )
     if args.resume and env.run_name_generated:
-        raise ValueError("--resume requires an explicit --run-name or CFD_SAE_RUN_NAME.")
+        raise ValueError("--resume requires an explicit --run-name.")
 
     config = load_hardware_config(env.root, env.hardware)
     if args.epochs is not None:

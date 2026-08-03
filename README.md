@@ -42,37 +42,38 @@ uv run python scripts/train_mgn.py --hardware auto --run-name smoke-local --epoc
 
 ## Quickstart (Colab via google-colab-cli)
 
-`google-colab-cli` provisions a GPU VM, runs our scripts there via `uv run`, and
-tears it down — no notebooks required. Our scripts are unchanged; the CLI is just
-the transport.
+`google-colab-cli` manages a **persistent, Drive-mounted** GPU VM. Code is synced
+via git and artifacts live on Google Drive, so stages chain naturally and
+`--resume` works across sessions. No notebooks required.
 
 ```bash
 # 1) Install the CLI (one time)
 uv tool install google-colab-cli
+colab auth
 
-# 2) Run a pipeline stage on a fresh GPU VM (auto-provisions + releases).
-#    Defaults to a T4 GPU (free-tier compatible). Override with --gpu or COLAB_GPU.
-bash scripts/colab_run.sh train_mgn --run-name colab-run --epochs 1
-bash scripts/colab_run.sh extract_embeddings --run-name colab-run --split test
-bash scripts/colab_run.sh train_sae --run-name colab-run --epochs 1
-bash scripts/colab_run.sh analyze --run-name colab-run --split test
+# 2) Provision + mount Drive (one time per VM)
+bash scripts/colab.sh new          # T4 GPU (free tier); --gpu L4/A100/CPU to change
+bash scripts/colab.sh drive        # approve in browser, press Enter
 
-# Change GPU (Pro+/paid tiers): --gpu flag or COLAB_GPU env
-bash scripts/colab_run.sh --gpu L4 train_mgn --run-name colab-run --epochs 1
-COLAB_GPU=A100 bash scripts/colab_run.sh train_sae --run-name colab-run --epochs 1
-# CPU-only runtime (no GPU):
-bash scripts/colab_run.sh --gpu "" train_mgn --run-name colab-run --epochs 1
+# 3) Sync code + deps (clones/pulls this repo; run again after each git push)
+bash scripts/colab.sh sync
 
-# Artifacts download back to ./checkpoints ./embeddings ./runs on this machine.
-# Env overrides: COLAB_KEEP=1 (leave VM alive).
+# 4) Run pipeline stages against the VM (artifacts persist on Drive)
+bash scripts/colab.sh run train_mgn          --run-name myrun --epochs 25
+bash scripts/colab.sh run extract_embeddings --run-name myrun --split test
+bash scripts/colab.sh run train_sae          --run-name myrun --epochs 25
+bash scripts/colab.sh run analyze            --run-name myrun --split test
+
+# 5) Pull a run's artifacts back to this machine (optional — Drive is the source of truth)
+bash scripts/colab.sh download myrun
+
+# 6) Release the VM when done
+bash scripts/colab.sh stop
 ```
 
-The wrapper drives: `colab new --gpu` → `colab upload` → `colab exec` (uv run
-scripts/… --hardware colab) → `colab download` → `colab stop`.
-
-Drive persistence: set `CFD_SAE_BASE_DIR` to a mounted Drive path (see
-`colab drivemount`) before running so checkpoints/embeddings survive teardown;
-`--resume` then continues on a later VM.
+The repo URL is taken from your local `git remote get-url origin` (ssh/git URLs
+are converted to https for the VM's anonymous clone). Override with `--repo-url`
+if needed. Use `--dry-run` to preview any command without executing it.
 
 <details>
 <summary>Legacy notebook flow (still works)</summary>
@@ -97,7 +98,7 @@ os.environ["PATH"] = f"/root/.local/bin:{os.environ['PATH']}"
 
 Hardware preset YAMLs live in `configs/hardware/`:
 
-- `colab.yaml` — also sets `gpu: T4` (the Colab VM GPU; override via `--gpu`/COLAB_GPU)
+- `colab.yaml` — also sets `gpu: T4` (the Colab VM GPU; override via `--gpu`)
 - `desktop.yaml`
 - `macbook.yaml`
 
@@ -111,6 +112,7 @@ Common script flags (all stages):
 - `--seed <int>`
 - `--resume` (continues `train_mgn`/`train_sae`; needs explicit `--run-name`)
 - `--epochs <int>` / `--max-steps <int>` (cap work for smoke tests)
+- `--base-dir <path>` (override where data/checkpoints/embeddings live; default is repo root)
 - `train_sae` only: `--val-frac`, `--patience`, `--min-epochs`, `--no-val`
   (see "SAE early-stopping" below)
 
@@ -151,24 +153,33 @@ uv run python scripts/train_sae.py         --hardware desktop --run-name myrun -
 uv run python scripts/analyze.py           --hardware desktop --run-name myrun --split test
 ```
 
-### Colab (google-colab-cli — provisions GPU VM, runs, downloads, tears down)
+### Colab (google-colab-cli — persistent Drive-mounted GPU VM)
 
 ```bash
 uv tool install google-colab-cli                                         # once
+colab auth
 
-# Defaults to a T4 GPU (free-tier). Override with --gpu or COLAB_GPU.
-bash scripts/colab_run.sh train_mgn         --run-name myrun --epochs 25
-bash scripts/colab_run.sh extract_embeddings --run-name myrun --split test
-bash scripts/colab_run.sh train_sae         --run-name myrun --epochs 25
-bash scripts/colab_run.sh analyze           --run-name myrun --split test
+# Provision + mount Drive (one time per VM). Defaults to a T4 GPU (free-tier).
+bash scripts/colab.sh new          # --gpu L4/A100/CPU to change
+bash scripts/colab.sh drive        # approve in browser, press Enter
 
-# Different GPU (Pro+/paid):
-bash scripts/colab_run.sh --gpu L4 train_sae --run-name myrun --epochs 25
-# CPU-only (no GPU):  bash scripts/colab_run.sh --gpu "" train_mgn --run-name myrun
+# Sync code + deps (clones/pulls this repo; re-run after each git push)
+bash scripts/colab.sh sync
 
-# For persistence across teardown: set CFD_SAE_BASE_DIR to a mounted Drive path,
-# then re-run stages with --resume. COLAB_KEEP=1 leaves the VM alive.
+# Run pipeline stages. Artifacts persist on Drive, so stages chain via --run-name.
+bash scripts/colab.sh run train_mgn          --run-name myrun --epochs 25
+bash scripts/colab.sh run extract_embeddings --run-name myrun --split test
+bash scripts/colab.sh run train_sae          --run-name myrun --epochs 25
+bash scripts/colab.sh run analyze            --run-name myrun --split test
+
+# Pull a run's artifacts back to this machine (optional — Drive is the source of truth)
+bash scripts/colab.sh download myrun
+
+# Release the VM when done
+bash scripts/colab.sh stop
 ```
+
+Every `colab.sh` command supports `--dry-run` to preview without executing.
 
 ### Notebooks (interactive analysis — no training)
 
@@ -201,7 +212,8 @@ epochs). Embedding z-score stats are computed over the train subset only.
 
 - All presets now use MGN `hidden_dim: 128` (paper spec). The Colab preset
   requests `gpu: T4` by default (free-tier compatible); override with
-  `COLAB_GPU=L4` (or `A100` on Pro+), or `COLAB_GPU=` for a CPU runtime.
+  `bash scripts/colab.sh new --gpu L4` (or `--gpu A100` on Pro+), or
+  `--gpu CPU` for a CPU runtime.
 
 ## Run Isolation and Resume Contract
 
@@ -213,7 +225,7 @@ Every run is isolated under a run name.
 
 Resume safety behavior:
 
-- `--resume` requires explicit `--run-name` (or `CFD_SAE_RUN_NAME`).
+- `--resume` requires explicit `--run-name`.
 - Resume validates key config compatibility against the saved snapshot.
 
 ## Data Download
@@ -264,14 +276,6 @@ uv run python scripts/extract_embeddings.py --hardware auto --run-name smoke-run
 uv run python scripts/train_sae.py --hardware auto --run-name smoke-run --epochs 1 --max-steps 100
 uv run python scripts/analyze.py --hardware auto --run-name smoke-run
 ```
-
-## Optional Env Vars
-
-See `.env.example`:
-
-- `CFD_SAE_RUN_NAME`
-- `CFD_SAE_HARDWARE`
-- `CFD_SAE_BASE_DIR`
 
 ## Notes on PyG Sparse Wheels
 

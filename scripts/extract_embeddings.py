@@ -36,14 +36,17 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Extract MGN node embeddings.")
     add_common_args(parser, include_resume=False)
     parser.add_argument(
-        "--split", default="test", choices=["train", "valid", "test"],
+        "--split",
+        default="test",
+        choices=["train", "valid", "test"],
         help="Split to extract (paper uses test).",
     )
     parser.add_argument(
         "--max-examples", type=int, default=None, help="Cap number of examples (smoke)."
     )
     parser.add_argument(
-        "--mgn-run", default=None,
+        "--mgn-run",
+        default=None,
         help="Run name that produced the MGN checkpoint (default: this run-name).",
     )
     return parser.parse_args()
@@ -65,7 +68,11 @@ def to_tensors(sample, device: str):
 def main() -> None:
     args = parse_args()
     env = get_env(
-        hardware=args.hardware, run_name=args.run_name, stage="extract", seed=args.seed
+        hardware=args.hardware,
+        run_name=args.run_name,
+        stage="extract",
+        seed=args.seed,
+        base_dir=Path(args.base_dir) if args.base_dir else None,
     )
     config = load_hardware_config(env.root, env.hardware)
     config_path = write_resolved_config(env, config)
