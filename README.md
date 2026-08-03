@@ -60,16 +60,19 @@ bash scripts/colab.sh drive        # approve in browser, press Enter
 # 3) Sync code + deps (clones/pulls this repo; run again after each git push)
 bash scripts/colab.sh sync
 
-# 4) Run pipeline stages against the VM (artifacts persist on Drive)
+# 4) Download the dataset into the mounted Drive (once; ~16 GB)
+bash scripts/colab.sh data
+
+# 5) Run pipeline stages against the VM (artifacts persist on Drive)
 bash scripts/colab.sh run train_mgn          --run-name myrun --epochs 25
 bash scripts/colab.sh run extract_embeddings --run-name myrun --split test
 bash scripts/colab.sh run train_sae          --run-name myrun --epochs 25
 bash scripts/colab.sh run analyze            --run-name myrun --split test
 
-# 5) Pull a run's artifacts back to this machine (optional — Drive is the source of truth)
+# 6) Pull a run's artifacts back to this machine (optional — Drive is the source of truth)
 bash scripts/colab.sh download myrun
 
-# 6) Release the VM when done
+# 7) Release the VM when done
 bash scripts/colab.sh stop
 ```
 

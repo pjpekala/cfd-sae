@@ -15,6 +15,7 @@
 #   new [--gpu T4|L4|A100|CPU]   Provision the VM (default GPU: T4)
 #   drive                         Mount Google Drive (one-time browser consent)
 #   sync                          Clone/pull the repo + uv sync on the VM
+#   data                          Download cylinder-flow TFRecords to Drive (~16GB, once)
 #   run <stage> [args...]         Run a pipeline stage on the VM
 #   download <run-name>           Pull a run's artifacts back to ./checkpoints ./embeddings ./runs
 #   log [output]                  Export a replayable log of the session
@@ -131,10 +132,7 @@ cmd_sync() {
   run_py "$py" 600
 }
 
-cmd_run() {
-  [[ $# -ge 1 ]] || { echo "usage: colab.sh run <stage> [stage args...]" >&2; exit 2; }
-  local stage="$1"
-  shift
+cmd_data() {
   local py
   printf -v py '%s\n' \
     "import os, subprocess" \
@@ -142,9 +140,43 @@ cmd_run() {
     "    raise SystemExit('repo not synced on VM; run colab.sh sync first')" \
     "if not os.path.isdir('/content/drive'):" \
     "    raise SystemExit('Drive not mounted; run colab.sh drive first')" \
-    "cmd = 'cd $VM_DIR && uv run python scripts/$stage.py --hardware colab $*'" \
+    "cmd = 'cd $VM_DIR && uv run python scripts/download_data.py --data-dir $DRIVE_BASE/data --skip-existing 2>&1'" \
     "print('>>', cmd)" \
-    "subprocess.run(cmd, shell=True, check=True)"
+    "proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, text=True, bufsize=1)" \
+    "assert proc.stdout is not None" \
+    "for line in proc.stdout:" \
+    "    print(line, end='')" \
+    "proc.wait()" \
+    "if proc.returncode != 0:" \
+    "    print('[colab] data download exited with status %d' % proc.returncode)" \
+    "    raise SystemExit(proc.returncode)"
+  run_py "$py" 3600
+}
+
+cmd_run() {
+  [[ $# -ge 1 ]] || { echo "usage: colab.sh run <stage> [stage args...]" >&2; exit 2; }
+  local stage="$1"
+  shift
+  local py
+  printf -v py '%s\n' \
+    "import os, subprocess, sys" \
+    "if not os.path.isdir('$VM_DIR'):" \
+    "    raise SystemExit('repo not synced on VM; run colab.sh sync first')" \
+    "if not os.path.isdir('/content/drive'):" \
+    "    raise SystemExit('Drive not mounted; run colab.sh drive first')" \
+    "if not os.path.exists('$DRIVE_BASE/data/train.tfrecord'):" \
+    "    print('[colab] training data not on Drive; run bash scripts/colab.sh data first (~16GB)')" \
+    "    sys.exit(2)" \
+    "cmd = 'cd $VM_DIR && uv run python scripts/$stage.py --hardware colab $* 2>&1'" \
+    "print('>>', cmd)" \
+    "proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, text=True, bufsize=1)" \
+    "assert proc.stdout is not None" \
+    "for line in proc.stdout:" \
+    "    print(line, end='')" \
+    "proc.wait()" \
+    "if proc.returncode != 0:" \
+    "    print('[colab] stage exited with status %d' % proc.returncode)" \
+    "    raise SystemExit(proc.returncode)"
   run_py "$py" "$TIMEOUT"
 }
 
@@ -215,6 +247,7 @@ case "$CMD" in
   new) cmd_new "$@" ;;
   drive) cmd_drive ;;
   sync) cmd_sync ;;
+  data) cmd_data ;;
   run) cmd_run "$@" ;;
   download) cmd_download "$@" ;;
   log) cmd_log "$@" ;;

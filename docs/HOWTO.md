@@ -72,7 +72,7 @@ All four stages chain on a shared `--run-name` so artifacts line up across stage
 |---|---|
 | **Python** | 3.12 (see `.python-version`) |
 | **uv** | [Install uv](https://docs.astral.sh/uv/) — used for all dependency and environment management |
-| **Data** | Cylinder-flow TFRecords (downloaded automatically, ~500 MB total) |
+| **Data** | Cylinder-flow TFRecords (download with `download_data`; ~16 GB total) |
 | **GPU (optional)** | CUDA GPU for faster training. CPU/MPS also work but are slower. |
 
 ---
@@ -586,6 +586,15 @@ The repo URL is taken from your local `git remote get-url origin` (ssh/git URLs
 are converted to https for the VM's anonymous clone). Override with `--repo-url`
 if needed.
 
+### Download the dataset (once per Drive)
+
+```bash
+bash scripts/colab.sh data        # ~16 GB of TFRecords into /content/drive/MyDrive/cfd-sae/data
+```
+
+This downloads `train/valid/test.tfrecord` into the mounted Drive so they
+survive VM teardown (re-running is a no-op thanks to `--skip-existing`).
+
 ### Run pipeline stages
 
 ```bash
@@ -595,7 +604,8 @@ bash scripts/colab.sh run train_sae          --run-name colab-run --epochs 25
 bash scripts/colab.sh run analyze            --run-name colab-run --split test
 ```
 
-`run` guards on the repo being synced and Drive being mounted. Artifacts are
+`run` guards on the repo being synced, Drive being mounted, and the dataset
+being present (it tells you to `colab.sh data` if not). Artifacts are
 written to `/content/drive/MyDrive/cfd-sae/` on the VM's mounted Drive, so they
 survive VM teardown and stages can `--resume` on a later VM.
 
