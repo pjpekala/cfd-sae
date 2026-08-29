@@ -8,6 +8,8 @@ This pipeline implements the approach from
 [arXiv:2507.16069](https://arxiv.org/abs/2507.16069) (Hu & Liu, IJCAI 2025
 XAI workshop). It is designed to be **colab-first, resumable, and reproducible**.
 
+> **Ordered checklist:** For step-by-step Colab execution with wrapper, manual `colab` CLI, and raw `uv` commands plus the notebook, see [RUNBOOK.md](RUNBOOK.md). This file is the detailed reference.
+
 ---
 
 ## Table of Contents

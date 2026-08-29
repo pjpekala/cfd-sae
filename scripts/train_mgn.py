@@ -46,7 +46,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--save-every", type=int, default=200, help="Checkpoint every N global steps."
     )
+    parser.add_argument("--no-tb", action="store_true", help="Disable TensorBoard logging.")
     return parser.parse_args()
+
+
+def _tb_writer(tb_dir: Path):
+    try:
+        from torch.utils.tensorboard import SummaryWriter
+    except Exception:
+        return None
+    try:
+        return SummaryWriter(str(tb_dir))
+    except Exception:
+        return None
 
 
 def to_tensors(sample, device: str):
@@ -121,6 +133,12 @@ def main() -> None:
     print(f"[train] MGN params: {sum(p.numel() for p in model.parameters()):,}")
     print(f"hardware={env.hardware} device={env.device} run_name={env.run_name}")
 
+    tb_writer = None if args.no_tb else _tb_writer(env.tb_dir)
+    if tb_writer is not None:
+        print(f"[tb] logging to {env.tb_dir}")
+    elif not args.no_tb:
+        print("[tb] tensorboard not available; logging disabled")
+
     dataset = build_sample_dataset(env.data_dir, "train")
     model.train()
     global_step = start_step
@@ -143,6 +161,10 @@ def main() -> None:
             optimizer.step()
 
             global_step += 1
+            if tb_writer is not None:
+                tb_writer.add_scalar("train/loss", loss.item(), global_step)
+                if global_step % 20 == 0:
+                    tb_writer.flush()
             if global_step % 20 == 0:
                 print(f"epoch={epoch} step={global_step} loss={loss.item():.6f}")
 
@@ -175,8 +197,13 @@ def main() -> None:
         "rng": None,
     }
     ckpt_path = save_checkpoint(ckpt, env.ckpt_dir, epoch=epoch, is_best=True)
+    if tb_writer is not None:
+        tb_writer.flush()
+        tb_writer.close()
+        print(f"[tb] closed {env.tb_dir}")
     print(f"[train] done. steps={global_step} best_loss={best_loss:.6f} nan={nan_seen}")
     print(f"  checkpoint={ckpt_path}")
+    print(f"  tb_logs={env.tb_dir}")
 
 
 if __name__ == "__main__":

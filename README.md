@@ -10,6 +10,8 @@ This repo is being built as a reproducible, resumable pipeline for:
 Current priority is reliability and restartability (especially on Colab), not
 benchmark tuning.
 
+> **Training runbook (Colab-first):** see [docs/RUNBOOK.md](docs/RUNBOOK.md) for the ordered checklist with wrapper, manual `colab` CLI, and raw `uv` commands plus the `05_analysis.ipynb` notebook. This README is the high-level overview; [docs/HOWTO.md](docs/HOWTO.md) is the detailed reference.
+
 ## Environment Management (uv-first)
 
 This project uses `uv` for all dependency and Python environment management.

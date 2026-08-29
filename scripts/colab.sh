@@ -17,6 +17,7 @@
 #   sync                          Clone/pull the repo + uv sync on the VM
 #   data                          Download cylinder-flow TFRecords to Drive (~16GB, once)
 #   run <stage> [args...]         Run a pipeline stage on the VM
+#   tensorboard <run-name> [--port 6006]  Start TensorBoard sidecar for a run's tb logs
 #   download <run-name>           Pull a run's artifacts back to ./checkpoints ./embeddings ./runs
 #   log [output]                  Export a replayable log of the session
 #   console                       Interactive debug shell on the VM
@@ -210,6 +211,56 @@ cmd_download() {
   echo "artifacts for run '$run' unpacked into ./checkpoints ./embeddings ./runs"
 }
 
+cmd_tensorboard() {
+  local run="${1:-}"
+  [[ -n "$run" ]] || { echo "usage: colab.sh tensorboard <run-name> [--port 6006]" >&2; exit 2; }
+  shift || true
+  local port="6006"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --port) port="${2:?--port needs a value}"; shift 2;;
+      *) echo "Unknown arg for 'tensorboard': $1" >&2; exit 2;;
+    esac
+  done
+  local logdir="$DRIVE_BASE/runs/$run/tb"
+  local py
+  printf -v py '%s\n' \
+    "import os, subprocess, sys, time, socket" \
+    "run = '$run'" \
+    "logdir = '$logdir'" \
+    "port = '$port'" \
+    "if not os.path.isdir(logdir):" \
+    "    print(f'[tb] no logdir yet: {logdir} (start training first; logs appear after first flush)')" \
+    "    print(f'[tb] will still start server on :{port} polling {logdir}') " \
+    "try:" \
+    "    subprocess.run([\"bash\",\"-lc\",\"pkill -f 'tensorboard.*$run' || true\"], check=False)" \
+    "except Exception:" \
+    "    pass" \
+    "cmd = f\"nohup tensorboard --logdir {logdir} --host 0.0.0.0 --port {port} --reload_interval 5 > /tmp/tb-{run}.log 2>&1 &\"" \
+    "print(f'[tb] starting: tensorboard --logdir {logdir} --host 0.0.0.0 --port {port}')" \
+    "proc = subprocess.run(cmd, shell=True, capture_output=True, text=True)" \
+    "print(proc.stdout, end='')" \
+    "print(proc.stderr, end='')" \
+    "time.sleep(2)" \
+    "log = open(f'/tmp/tb-{run}.log').read()[-2000:] if os.path.exists(f'/tmp/tb-{run}.log') else ''" \
+    "print(log)" \
+    "print(f'[tb] logs on Drive: {logdir} (persistent, polled every 5s)')" \
+    "print(f'[tb] local fallback (polls Drive): uv run tensorboard --logdir runs/$run/tb --port {port}')" \
+    "print(f'[tb] if Colab proxy URL appears above, open it; else expect 5-10s Drive sync delay')" \
+    "sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)" \
+    "try:" \
+    "    sock.settimeout(1)" \
+    "    sock.connect(('127.0.0.1', int(port)))" \
+    "    print(f'[tb] listening on 0.0.0.0:{port}')" \
+    "except Exception as e:" \
+    "    print(f'[tb] not yet listening on :{port}: {e}')" \
+    "finally:" \
+    "    sock.close()"
+  run_py "$py" 60
+  echo "[tb] tip: open a second terminal for training: bash scripts/colab.sh run train_mgn --run-name $run --epochs 25"
+  echo "[tb] stop TB: colab console -s $SESSION -> pkill -f tensorboard"
+}
+
 cmd_log() {
   local out="${1:-colab_run_log.md}"
   run_local colab log -s "$SESSION" -o "$out"
@@ -249,6 +300,7 @@ case "$CMD" in
   sync) cmd_sync ;;
   data) cmd_data ;;
   run) cmd_run "$@" ;;
+  tensorboard) cmd_tensorboard "$@" ;;
   download) cmd_download "$@" ;;
   log) cmd_log "$@" ;;
   console) cmd_console ;;

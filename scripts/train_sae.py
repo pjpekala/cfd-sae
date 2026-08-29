@@ -75,7 +75,19 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Disable early-stopping; run fixed --epochs instead.",
     )
+    parser.add_argument("--no-tb", action="store_true", help="Disable TensorBoard logging.")
     return parser.parse_args()
+
+
+def _tb_writer(tb_dir: Path):
+    try:
+        from torch.utils.tensorboard import SummaryWriter
+    except Exception:
+        return None
+    try:
+        return SummaryWriter(str(tb_dir))
+    except Exception:
+        return None
 
 
 def load_embedding_paths(embed_dir: Path, split: str) -> list[Path]:
@@ -217,6 +229,12 @@ def main() -> None:
             best_loss = float(ckpt.get("best_loss", float("inf")))
             print(f"[resume] global_step={start_step} best_loss={best_loss:.6f}")
 
+    tb_writer = None if args.no_tb else _tb_writer(env.tb_dir)
+    if tb_writer is not None:
+        print(f"[tb] logging to {env.tb_dir}")
+    elif not args.no_tb:
+        print("[tb] tensorboard not available; logging disabled")
+
     batch_size = int(config.get("sae", {}).get("batch_size", 128))
     model.train()
     global_step = start_step
@@ -284,6 +302,11 @@ def main() -> None:
             model.normalize_decoder()
 
             global_step += 1
+            if tb_writer is not None:
+                tb_writer.add_scalar("train/loss", loss.item(), global_step)
+                tb_writer.add_scalar("train/l1", float(z.abs().mean().item()), global_step)
+                if global_step % 20 == 0:
+                    tb_writer.flush()
             if global_step % 20 == 0:
                 print(f"epoch={epoch} step={global_step} loss={loss.item():.6f}")
 
@@ -302,6 +325,9 @@ def main() -> None:
         if not args.no_val and val_paths:
             val_mse = evaluate_val(model, val_paths, mean_t, std_t, env.device)
             print(f"epoch={epoch} val_mse={val_mse:.6f}")
+            if tb_writer is not None:
+                tb_writer.add_scalar("val/mse", val_mse, epoch)
+                tb_writer.flush()
             if val_mse < best_val:
                 best_val = val_mse
                 best_val_step = global_step
@@ -325,10 +351,15 @@ def main() -> None:
         model.load_state_dict(best_ckpt["model_state"])
         print(f"[sae] restored best-val weights (val_mse={best_val:.6f} @ step {best_val_step})")
     save_sae(is_best=True)
+    if tb_writer is not None:
+        tb_writer.flush()
+        tb_writer.close()
+        print(f"[tb] closed {env.tb_dir}")
     print(
         f"[sae] done. steps={global_step} best_train_loss={best_loss:.6f} "
         f"best_val={best_val:.6f} early_stop={stopped_early}"
     )
+    print(f"  tb_logs={env.tb_dir}")
 
 
 if __name__ == "__main__":

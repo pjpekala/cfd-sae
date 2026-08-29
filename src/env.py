@@ -92,6 +92,7 @@ class Env:
     sae_ckpt_dir: Path
     embed_dir: Path
     run_dir: Path
+    tb_dir: Path
     run_name: str
     run_name_generated: bool
     on_colab: bool
@@ -146,6 +147,7 @@ def get_env(
         sae_ckpt_dir=ckpt_root / resolved_run_name / "sae",
         embed_dir=embed_root / resolved_run_name,
         run_dir=run_root / resolved_run_name,
+        tb_dir=(run_root / resolved_run_name / "tb"),
         run_name=resolved_run_name,
         run_name_generated=run_name_generated,
         on_colab=on_colab,
@@ -158,6 +160,7 @@ def get_env(
         env.ckpt_dir,
         env.embed_dir,
         env.run_dir,
+        env.tb_dir,
     ):
         path.mkdir(parents=True, exist_ok=True)
 
