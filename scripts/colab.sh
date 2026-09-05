@@ -9,7 +9,7 @@
 # No environment variables. All knobs are flags or hardcoded defaults.
 #
 # Usage:
-#   bash scripts/colab.sh [--dry-run] [--session <name>] [--repo-url <url>] <command> [args...]
+#   bash scripts/colab.sh [--dry-run] [--auth adc|oauth2] [--session <name>] [--repo-url <url>] <command> [args...]
 #
 # Commands:
 #   new [--gpu T4|L4|A100|CPU]   Provision the VM (default GPU: T4)
@@ -17,8 +17,8 @@
 #   sync                          Clone/pull the repo + uv sync on the VM
 #   data                          Download cylinder-flow TFRecords to Drive (~16GB, once)
 #   run <stage> [args...]         Run a pipeline stage on the VM
-#   tensorboard <run-name> [--port 6006]  Start TensorBoard sidecar for a run's tb logs
-#   download <run-name>           Pull a run's artifacts back to ./checkpoints ./embeddings ./runs
+#   tensorboard <run-name> [--port 6006] [--poll] [--poll-interval 10] [--tb-only]  Start TB / start + poll
+#   download <run-name> [--tb-only]  Pull a run's artifacts back (tb-only for fast TB poll)
 #   log [output]                  Export a replayable log of the session
 #   console                       Interactive debug shell on the VM
 #   status                        Show session status
@@ -46,9 +46,18 @@ GPU="T4"
 
 DRY_RUN=0
 REPO_URL=""
+AUTH=""
 
 usage() {
   sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+colab_cmd() {
+  if [[ -n "$AUTH" ]]; then
+    echo "colab --auth=$AUTH"
+  else
+    echo "colab"
+  fi
 }
 
 # Run a local command, or print it in dry-run mode.
@@ -66,11 +75,19 @@ run_py() {
   local py="$1"
   local timeout="${2:-30}"
   if [[ "$DRY_RUN" == 1 ]]; then
-    echo "[dry-run] colab exec -s $SESSION --timeout $timeout <<'PY'"
+    if [[ -n "$AUTH" ]]; then
+      echo "[dry-run] colab --auth=$AUTH exec -s $SESSION --timeout $timeout <<'PY'"
+    else
+      echo "[dry-run] colab exec -s $SESSION --timeout $timeout <<'PY'"
+    fi
     printf '%s\n' "$py"
     echo "PY"
   else
-    printf '%s\n' "$py" | colab exec -s "$SESSION" --timeout "$timeout"
+    if [[ -n "$AUTH" ]]; then
+      printf '%s\n' "$py" | colab --auth="$AUTH" exec -s "$SESSION" --timeout "$timeout"
+    else
+      printf '%s\n' "$py" | colab exec -s "$SESSION" --timeout "$timeout"
+    fi
   fi
 }
 
@@ -100,11 +117,19 @@ cmd_new() {
   [[ "$gpu" != "CPU" ]] || gpu=""
   local args=(-s "$SESSION")
   [[ -n "$gpu" ]] && args+=(--gpu "$gpu")
-  run_local colab new "${args[@]}"
+  if [[ -n "$AUTH" ]]; then
+    run_local colab --auth="$AUTH" new "${args[@]}"
+  else
+    run_local colab new "${args[@]}"
+  fi
 }
 
 cmd_drive() {
-  run_local colab drivemount -s "$SESSION"
+  if [[ -n "$AUTH" ]]; then
+    run_local colab --auth="$AUTH" drivemount -s "$SESSION"
+  else
+    run_local colab drivemount -s "$SESSION"
+  fi
 }
 
 cmd_sync() {
@@ -182,43 +207,93 @@ cmd_run() {
 }
 
 cmd_download() {
-  [[ $# -ge 1 ]] || { echo "usage: colab.sh download <run-name>" >&2; exit 2; }
+  [[ $# -ge 1 ]] || { echo "usage: colab.sh download <run-name> [--tb-only]" >&2; exit 2; }
   local run="$1"
+  shift || true
+  local tb_only=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --tb-only) tb_only=1; shift ;;
+      *) echo "Unknown arg for 'download': $1" >&2; exit 2;;
+    esac
+  done
   local remote="/content/cfd-sae-$run.tgz"
+  if [[ "$tb_only" == 1 ]]; then
+    remote="/content/cfd-sae-$run-tb.tgz"
+  fi
   local tmp
-  tmp="$(mktemp /tmp/cfd-sae-XXXXXX.tgz)"
+  tmp="$(mktemp /tmp/cfd-sae-XXXXXX)"
+  tmp="${tmp}.tgz"
   local py
-  printf -v py '%s\n' \
-    "import os, subprocess" \
-    "base = '$DRIVE_BASE'" \
-    "run = '$run'" \
-    "paths = [os.path.join(base, d, run) for d in ('checkpoints', 'embeddings', 'runs')]" \
-    "missing = [p for p in paths if not os.path.isdir(p)]" \
-    "if missing:" \
-    "    raise SystemExit('no artifacts on Drive for run %r: %s' % (run, ', '.join(missing)))" \
-    "cmd = 'tar czf $remote -C %s checkpoints/%s embeddings/%s runs/%s' % (base, run, run, run)" \
-    "subprocess.run(cmd, shell=True, check=True)" \
-    "print('tarred artifacts for run', run)"
+  if [[ "$tb_only" == 1 ]]; then
+    printf -v py '%s\n' \
+      "import os, subprocess" \
+      "base = '$DRIVE_BASE'" \
+      "run = '$run'" \
+      "tb_path = os.path.join(base, 'runs', run, 'tb')" \
+      "if not os.path.isdir(tb_path):" \
+      "    raise SystemExit(f'no tb logs on Drive for run {run!r}: {tb_path} (start training first)')" \
+      "cmd = 'tar czf $remote -C %s runs/%s/tb' % (base, run)" \
+      "proc = subprocess.run(cmd, shell=True)" \
+      "if proc.returncode != 0 and not os.path.exists('$remote'):" \
+      "    raise SystemExit(f'tar failed for {run!r} (code {proc.returncode})')" \
+      "if proc.returncode != 0:" \
+      "    print(f'[warn] tar exited {proc.returncode} but archive exists (file changed while writing?)')" \
+      "print('tarred tb for run', run)"
+  else
+    printf -v py '%s\n' \
+      "import os, subprocess" \
+      "base = '$DRIVE_BASE'" \
+      "run = '$run'" \
+      "paths = [os.path.join(base, d, run) for d in ('checkpoints', 'embeddings', 'runs')]" \
+      "missing = [p for p in paths if not os.path.isdir(p)]" \
+      "if missing:" \
+      "    raise SystemExit('no artifacts on Drive for run %r: %s' % (run, ', '.join(missing)))" \
+      "cmd = 'tar czf $remote -C %s checkpoints/%s embeddings/%s runs/%s' % (base, run, run, run)" \
+      "proc = subprocess.run(cmd, shell=True)" \
+      "if proc.returncode != 0 and not os.path.exists('$remote'):" \
+      "    raise SystemExit(f'tar failed for {run!r} (code {proc.returncode})')" \
+      "if proc.returncode != 0:" \
+      "    print(f'[warn] tar exited {proc.returncode} but archive exists')" \
+      "print('tarred artifacts for run', run)"
+  fi
   run_py "$py" 300
-  run_local colab download -s "$SESSION" "$remote" "$tmp"
-  run_local mkdir -p checkpoints embeddings runs
+  if [[ -n "$AUTH" ]]; then
+    run_local colab --auth="$AUTH" download -s "$SESSION" "$remote" "$tmp"
+  else
+    run_local colab download -s "$SESSION" "$remote" "$tmp"
+  fi
+  if [[ "$tb_only" == 1 ]]; then
+    run_local mkdir -p "runs/$run/tb"
+  else
+    run_local mkdir -p checkpoints embeddings runs
+  fi
   if [[ "$DRY_RUN" == 1 ]]; then
     echo "[dry-run] tar xzf $tmp -C ."
   else
     tar xzf "$tmp" -C .
     rm -f "$tmp"
   fi
-  echo "artifacts for run '$run' unpacked into ./checkpoints ./embeddings ./runs"
+  if [[ "$tb_only" == 1 ]]; then
+    echo "tb for run '$run' unpacked into ./runs/$run/tb"
+  else
+    echo "artifacts for run '$run' unpacked into ./checkpoints ./embeddings ./runs"
+  fi
 }
 
 cmd_tensorboard() {
   local run="${1:-}"
-  [[ -n "$run" ]] || { echo "usage: colab.sh tensorboard <run-name> [--port 6006]" >&2; exit 2; }
+  [[ -n "$run" ]] || { echo "usage: colab.sh tensorboard <run-name> [--port 6006] [--poll] [--poll-interval 10] [--tb-only]" >&2; exit 2; }
   shift || true
   local port="6006"
+  local do_poll=0
+  local poll_interval="10"
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --port) port="${2:?--port needs a value}"; shift 2;;
+      --poll) do_poll=1; shift ;;
+      --poll-interval) poll_interval="${2:?--poll-interval needs a value}"; shift 2;;
+      --tb-only) shift ;;
       *) echo "Unknown arg for 'tensorboard': $1" >&2; exit 2;;
     esac
   done
@@ -245,43 +320,100 @@ cmd_tensorboard() {
     "log = open(f'/tmp/tb-{run}.log').read()[-2000:] if os.path.exists(f'/tmp/tb-{run}.log') else ''" \
     "print(log)" \
     "print(f'[tb] logs on Drive: {logdir} (persistent, polled every 5s)')" \
-    "print(f'[tb] local fallback (polls Drive): uv run tensorboard --logdir runs/$run/tb --port {port}')" \
-    "print(f'[tb] if Colab proxy URL appears above, open it; else expect 5-10s Drive sync delay')" \
+    "print(f'[tb] VM TB at 0.0.0.0:{port} is INTERNAL to the VM (http://0.0.0.0:{port}/ is NOT clickable from your laptop)')" \
+    "print(f'[tb] LIVE for CLI users: run LOCALLY: uv run tensorboard --logdir runs/{run}/tb --port {port}  # after: bash scripts/colab.sh download {run}  (or periodic pull for near-live)')" \
+    "print(f'[tb] Colab notebook only: %load_ext tensorboard; %tensorboard --logdir {logdir}  # proxied to *.colab.googleusercontent.com')" \
+    "print(f'[tb] delay: Drive sync ~5-10s; events flush every 20 steps')" \
     "sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)" \
     "try:" \
     "    sock.settimeout(1)" \
     "    sock.connect(('127.0.0.1', int(port)))" \
-    "    print(f'[tb] listening on 0.0.0.0:{port}')" \
+    "    print(f'[tb] VM listening on 0.0.0.0:{port} (internal, see above)')" \
     "except Exception as e:" \
-    "    print(f'[tb] not yet listening on :{port}: {e}')" \
+    "    print(f'[tb] VM not yet listening on :{port}: {e}')" \
     "finally:" \
     "    sock.close()"
   run_py "$py" 60
-  echo "[tb] tip: open a second terminal for training: bash scripts/colab.sh run train_mgn --run-name $run --epochs 25"
-  echo "[tb] stop TB: colab console -s $SESSION -> pkill -f tensorboard"
+  local auth_flag=""
+  if [[ -n "$AUTH" ]]; then
+    auth_flag=" --auth $AUTH"
+  fi
+  echo "[tb] LIVE: locally: uv run tensorboard --logdir runs/$run/tb --port $port  # then open http://localhost:$port  (polls Drive, 5-10s delay)"
+  if [[ "$do_poll" == 1 ]]; then
+    echo "[tb] --poll: starting local TensorBoard + Drive poll loop (interval ${poll_interval}s)"
+    echo "[tb] polling: while true; do bash scripts/colab.sh${auth_flag} download $run --tb-only >/dev/null 2>&1; sleep $poll_interval; done &"
+    if [[ "$DRY_RUN" == 1 ]]; then
+      echo "[dry-run] uv run tensorboard --logdir runs/$run/tb --port $port &"
+      echo "[dry-run] while true; do bash scripts/colab.sh${auth_flag} download $run --tb-only >/dev/null 2>&1; sleep $poll_interval; done &"
+      echo "[dry-run] wait"
+    else
+      mkdir -p "runs/$run/tb"
+      bash scripts/colab.sh${auth_flag} download "$run" --tb-only >/dev/null 2>&1 || true
+      uv run tensorboard --logdir "runs/$run/tb" --port "$port" &
+      local tb_pid=$!
+      echo "[tb] local TensorBoard pid $tb_pid at http://localhost:$port"
+      echo "[tb] polling Drive every ${poll_interval}s (Ctrl-C to stop)"
+      trap "echo '[tb] stopping poll loop and TensorBoard'; kill $tb_pid 2>/dev/null || true; exit 0" INT TERM
+      while true; do sleep "$poll_interval"; bash scripts/colab.sh${auth_flag} download "$run" --tb-only >/dev/null 2>&1 || true; done
+      wait $tb_pid
+    fi
+  else
+    echo "[tb] tip: for near-live, in another local terminal: while true; do bash scripts/colab.sh${auth_flag} download $run --tb-only >/dev/null 2>&1; sleep $poll_interval; done"
+    echo "[tb] or: bash scripts/colab.sh${auth_flag} tensorboard $run --poll --poll-interval $poll_interval --port $port"
+  fi
+  echo "[tb] training: bash scripts/colab.sh${auth_flag} run train_mgn --run-name $run --epochs 25  (or train_sae)"
+  echo "[tb] stop VM TB: colab${auth_flag} console -s $SESSION -> pkill -f tensorboard; cat /tmp/tb-$run.log  (not .lo)"
 }
 
 cmd_log() {
   local out="${1:-colab_run_log.md}"
-  run_local colab log -s "$SESSION" -o "$out"
+  if [[ -n "$AUTH" ]]; then
+    run_local colab --auth="$AUTH" log -s "$SESSION" -o "$out"
+  else
+    run_local colab log -s "$SESSION" -o "$out"
+  fi
 }
 
 cmd_console() {
-  run_local colab console -s "$SESSION"
+  if [[ -n "$AUTH" ]]; then
+    run_local colab --auth="$AUTH" console -s "$SESSION"
+  else
+    run_local colab console -s "$SESSION"
+  fi
 }
 
 cmd_status() {
-  run_local colab status -s "$SESSION"
+  if [[ -n "$AUTH" ]]; then
+    run_local colab --auth="$AUTH" status -s "$SESSION"
+  else
+    run_local colab status -s "$SESSION"
+  fi
 }
 
 cmd_stop() {
-  run_local colab stop -s "$SESSION"
+  if [[ -n "$AUTH" ]]; then
+    run_local colab --auth="$AUTH" stop -s "$SESSION"
+  else
+    run_local colab stop -s "$SESSION"
+  fi
 }
 
 # ---- global flag parsing ----
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run) DRY_RUN=1; shift ;;
+    --auth)
+      val="${2:-}"
+      if [[ "$val" == "adc" || "$val" == "oauth2" ]]; then
+        if [[ "$val" == "adc" ]]; then AUTH="adc"; else AUTH=""; fi
+        shift 2
+      elif [[ -z "$val" || "$val" == -* ]]; then
+        AUTH="adc"
+        shift
+      else
+        echo "Unknown --auth value: $val (use adc or oauth2)" >&2; exit 2
+      fi
+      ;;
     --session) SESSION="${2:?--session needs a value}"; shift 2 ;;
     --repo-url) REPO_URL="${2:?--repo-url needs a value}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;

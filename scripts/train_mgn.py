@@ -1,17 +1,5 @@
 #!/usr/bin/env python3
-"""Phase-3 MGN training entrypoint (resumable).
-
-Trains the MeshGraphNet on next-frame prediction over a split, with periodic
-+ best checkpointing and --resume support (restores model + optimizer +
-global_step and continues). Single-graph (single-example) batches because node
-count N varies per example/split.
-
-Run:
-    uv run python scripts/train_mgn.py --hardware macbook --run-name train-mgn \
-        --epochs 1
-    uv run python scripts/train_mgn.py --hardware macbook --run-name train-mgn \
-        --resume
-"""
+"""Phase-3 MGN training entrypoint (resumable)."""
 
 from __future__ import annotations
 
@@ -23,6 +11,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+import numpy as np
 import torch
 
 from src.cli import add_common_args
@@ -47,6 +36,16 @@ def parse_args() -> argparse.Namespace:
         "--save-every", type=int, default=200, help="Checkpoint every N global steps."
     )
     parser.add_argument("--no-tb", action="store_true", help="Disable TensorBoard logging.")
+    parser.add_argument(
+        "--noise-std",
+        type=float,
+        default=0.02,
+        help="Gaussian noise std on input velocity (normalized space). 0 to disable.",
+    )
+    parser.add_argument(
+        "--no-normalize", action="store_true", help="Disable feature normalization."
+    )
+    parser.add_argument("--no-shuffle", action="store_true", help="Disable per-epoch shuffling.")
     return parser.parse_args()
 
 
@@ -62,8 +61,6 @@ def _tb_writer(tb_dir: Path):
 
 
 def to_tensors(sample, device: str):
-    import numpy as np
-
     def t(arr):
         return torch.as_tensor(np.ascontiguousarray(arr), dtype=torch.float32, device=device)
 
@@ -74,16 +71,6 @@ def to_tensors(sample, device: str):
         t(sample.target_velocity),
         t(sample.target_pressure),
     )
-
-
-def build_sample_dataset(data_dir: Path, split: str):
-    """Yield (frame) GraphSamples across all examples/frames of a split."""
-    from src.data.cylinder_flow import build_sample, split_reader
-
-    for example in split_reader(data_dir, split):
-        n_frames = example["velocity"].shape[0]
-        for fr in range(n_frames - 1):
-            yield build_sample(example, frame=fr)
 
 
 def main() -> None:
@@ -120,6 +107,8 @@ def main() -> None:
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
     start_step = 0
+    start_epoch = 1
+    start_sample_idx = 0
     best_loss = float("inf")
     if args.resume:
         ckpt = load_latest(env.ckpt_dir)
@@ -128,10 +117,35 @@ def main() -> None:
             optimizer.load_state_dict(ckpt["optimizer_state"])
             start_step = int(ckpt.get("global_step", 0))
             best_loss = float(ckpt.get("best_loss", float("inf")))
-            print(f"[resume] restored global_step={start_step} best_loss={best_loss:.6f}")
+            start_epoch = int(ckpt.get("epoch", 1))
+            start_sample_idx = int(ckpt.get("sample_idx", 0))
+            # next epoch if previous epoch was fully completed
+            # sample_idx == 0 or < len means resume mid-epoch; otherwise advance
+            print(
+                f"[resume] step={start_step} epoch={start_epoch} "
+                f"sample_idx={start_sample_idx} best={best_loss:.6f}"
+            )
 
     print(f"[train] MGN params: {sum(p.numel() for p in model.parameters()):,}")
     print(f"hardware={env.hardware} device={env.device} run_name={env.run_name}")
+
+    stats = None
+    if not args.no_normalize:
+        from src.data.cylinder_flow import compute_stats, load_stats, save_stats, stats_path
+
+        sp = stats_path(env.data_dir)
+        if sp.exists():
+            stats = load_stats(env.data_dir)
+            print(f"[normalize] loaded stats from {sp}")
+        else:
+            print("[normalize] computing stats over train split...")
+            stats = compute_stats(env.data_dir, "train")
+            save_stats(stats, env.data_dir)
+            print(f"[normalize] saved stats to {sp}")
+        print(f"  velocity mean={stats.velocity_mean} std={stats.velocity_std}")
+        print(f"  pressure mean={stats.pressure_mean:.4f} std={stats.pressure_std:.4f}")
+        print(f"  edge_rel mean={stats.edge_rel_mean} std={stats.edge_rel_std}")
+        print(f"  edge_dist mean={stats.edge_dist_mean:.4f} std={stats.edge_dist_std:.4f}")
 
     tb_writer = None if args.no_tb else _tb_writer(env.tb_dir)
     if tb_writer is not None:
@@ -139,19 +153,68 @@ def main() -> None:
     elif not args.no_tb:
         print("[tb] tensorboard not available; logging disabled")
 
-    dataset = build_sample_dataset(env.data_dir, "train")
+    from src.data.cylinder_flow import build_sample, normalize_graph_sample, split_reader
+
+    print("[data] loading train examples into memory...")
+    examples = list(split_reader(env.data_dir, "train"))
+    if not examples:
+        raise RuntimeError("No training examples found")
+    flat_index: list[tuple[int, int]] = []
+    for ei, ex in enumerate(examples):
+        n_frames = int(ex["velocity"].shape[0])
+        for fr in range(n_frames - 1):
+            flat_index.append((ei, fr))
+    print(f"[data] {len(examples)} examples, {len(flat_index)} frame samples")
+
     model.train()
     global_step = start_step
     nan_seen = False
-    epoch = 0
+    num_epochs = args.epochs or config.get("mgn", {}).get("epochs", 1)
+    epoch = start_epoch
+    # If resuming mid-epoch and start_sample_idx >= len(flat_index), advance to next epoch
+    if start_sample_idx >= len(flat_index):
+        start_epoch += 1
+        start_sample_idx = 0
 
-    for epoch in range(1, (args.epochs or config.get("mgn", {}).get("epochs", 1)) + 1):
-        for sample in dataset:
+    velocity_offset = 4  # one-hot(4) then velocity(2) in node_features [N,8]
+
+    for epoch in range(start_epoch, num_epochs + 1):
+        is_resumed_epoch = epoch == start_epoch and start_sample_idx > 0
+        indices = list(range(len(flat_index)))
+        if not args.no_shuffle:
+            rng = np.random.default_rng((args.seed or 0) + epoch)
+            rng.shuffle(indices)
+        else:
+            # deterministic order
+            pass
+
+        start_idx = start_sample_idx if is_resumed_epoch else 0
+        # reset for next epochs
+        start_sample_idx = 0
+
+        if start_idx > 0:
+            print(f"[resume] epoch {epoch}: skipping {start_idx}/{len(indices)} samples")
+
+        for pos in range(start_idx, len(indices)):
             if args.max_steps is not None and (global_step - start_step) >= args.max_steps:
                 break
-            nf, ei, ea, tv, tp = to_tensors(sample, env.device)
+            ei, fr = flat_index[indices[pos]]
+            sample = build_sample(examples[ei], frame=fr)
+            if stats is not None:
+                sample = normalize_graph_sample(sample, stats)
+
+            nf, ei_t, ea, tv, tp = to_tensors(sample, env.device)
+
+            if args.noise_std and args.noise_std > 0 and stats is not None:
+                noise = (
+                    torch.randn(nf.shape[0], 2, device=nf.device, dtype=nf.dtype) * args.noise_std
+                )
+                nf[:, velocity_offset : velocity_offset + 2] = (
+                    nf[:, velocity_offset : velocity_offset + 2] + noise
+                )
+
             optimizer.zero_grad()
-            pred_vel, pred_pres = model(nf, ei, ea)
+            pred_vel, pred_pres = model(nf, ei_t, ea)
             loss = model.loss(pred_vel, pred_pres, tv, tp)
             if torch.isnan(loss):
                 nan_seen = True
@@ -161,12 +224,15 @@ def main() -> None:
             optimizer.step()
 
             global_step += 1
+            sample_idx_next = pos + 1
+
             if tb_writer is not None:
                 tb_writer.add_scalar("train/loss", loss.item(), global_step)
                 if global_step % 20 == 0:
                     tb_writer.flush()
             if global_step % 20 == 0:
-                print(f"epoch={epoch} step={global_step} loss={loss.item():.6f}")
+                msg = f"epoch={epoch} step={global_step} pos={pos + 1}/{len(indices)}"
+                print(f"{msg} loss={loss.item():.6f}")
 
             if loss.item() < best_loss:
                 best_loss = loss.item()
@@ -175,9 +241,11 @@ def main() -> None:
                 is_best = False
 
             if global_step % args.save_every == 0:
+                at_end = sample_idx_next >= len(indices)
                 ckpt = {
                     "global_step": global_step,
-                    "epoch": epoch,
+                    "epoch": epoch + 1 if at_end else epoch,
+                    "sample_idx": 0 if at_end else sample_idx_next,
                     "best_loss": best_loss,
                     "model_state": model.state_dict(),
                     "optimizer_state": optimizer.state_dict(),
@@ -186,11 +254,14 @@ def main() -> None:
                 save_checkpoint(ckpt, env.ckpt_dir, epoch=epoch, is_best=is_best)
         if args.max_steps is not None and (global_step - start_step) >= args.max_steps:
             break
+        # after completing an epoch, ensure sample_idx reset
+        if args.max_steps is not None and (global_step - start_step) >= args.max_steps:
+            break
 
-    # Final checkpoint.
     ckpt = {
         "global_step": global_step,
         "epoch": epoch,
+        "sample_idx": 0,
         "best_loss": best_loss,
         "model_state": model.state_dict(),
         "optimizer_state": optimizer.state_dict(),

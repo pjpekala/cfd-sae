@@ -49,6 +49,9 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Run name that produced the MGN checkpoint (default: this run-name).",
     )
+    parser.add_argument(
+        "--no-normalize", action="store_true", help="Disable feature normalization."
+    )
     return parser.parse_args()
 
 
@@ -97,7 +100,21 @@ def main() -> None:
     model.load_state_dict(ckpt["model_state"])
     model.eval()
 
-    from src.data.cylinder_flow import build_sample, split_reader
+    from src.data.cylinder_flow import build_sample, normalize_graph_sample, split_reader
+
+    stats = None
+    if not args.no_normalize:
+        from src.data.cylinder_flow import compute_stats, load_stats, save_stats, stats_path
+
+        sp = stats_path(env.data_dir)
+        if sp.exists():
+            stats = load_stats(env.data_dir)
+            print(f"[normalize] loaded stats from {sp}")
+        else:
+            print("[normalize] computing stats over train split...")
+            stats = compute_stats(env.data_dir, "train")
+            save_stats(stats, env.data_dir)
+            print(f"[normalize] saved stats to {sp}")
 
     out_dir = env.embed_dir / args.split
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -111,6 +128,8 @@ def main() -> None:
             n_frames = example["velocity"].shape[0]
             for fr in range(n_frames - 1):
                 sample = build_sample(example, frame=fr)
+                if stats is not None:
+                    sample = normalize_graph_sample(sample, stats)
                 nf, ei, ea = to_tensors(sample, env.device)
                 h = model.node_embeddings(nf, ei, ea)  # [N, hidden]
                 # Save [N, hidden] float32, one file per (example, frame).

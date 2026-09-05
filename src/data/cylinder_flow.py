@@ -58,8 +58,7 @@ def ensure_split_exists(data_dir: Path, split: str) -> Path:
     path = split_path(data_dir, split)
     if not path.exists():
         raise FileNotFoundError(
-            f"Missing TFRecord for split '{split}': {path}. "
-            "Run scripts/download_data.sh first."
+            f"Missing TFRecord for split '{split}': {path}. Run scripts/download_data.sh first."
         )
     return path
 
@@ -76,9 +75,7 @@ def _unpack_bytes(buf: bytes, dtype: np.dtype, name: str) -> np.ndarray:
     try:
         arr = np.frombuffer(buf, dtype=dtype)
     except Exception as exc:  # pragma: no cover
-        raise CylinderFlowError(
-            f"Field '{name}' could not be unpacked as {dtype}: {exc}"
-        ) from exc
+        raise CylinderFlowError(f"Field '{name}' could not be unpacked as {dtype}: {exc}") from exc
     if arr.size == 0:
         raise CylinderFlowError(f"Field '{name}' decoded to an empty array.")
     return arr
@@ -100,12 +97,12 @@ def decode_one(record_bytes: bytes) -> dict[str, np.ndarray]:
         raise CylinderFlowError(f"Failed to parse TFRecord example: {exc}") from exc
 
     features = example.features.feature
-    missing = [k for k in ("mesh_pos", "node_type", "cells",
-                            "pressure", "velocity") if k not in features]
+    missing = [
+        k for k in ("mesh_pos", "node_type", "cells", "pressure", "velocity") if k not in features
+    ]
     if missing:
         raise CylinderFlowError(
-            f"Record missing required fields: {missing}. "
-            f"Found keys: {sorted(features)}"
+            f"Record missing required fields: {missing}. Found keys: {sorted(features)}"
         )
 
     def blob(key: str) -> bytes:
@@ -121,9 +118,7 @@ def decode_one(record_bytes: bytes) -> dict[str, np.ndarray]:
     velocity = _unpack_bytes(blob("velocity"), np.float32, "velocity")
 
     if mesh_pos.size % 2 != 0:
-        raise CylinderFlowError(
-            f"mesh_pos has {mesh_pos.size} floats (not divisible by 2)."
-        )
+        raise CylinderFlowError(f"mesh_pos has {mesh_pos.size} floats (not divisible by 2).")
     n_nodes = mesh_pos.size // 2
     mesh_pos = mesh_pos.reshape(n_nodes, 2)
 
@@ -138,8 +133,7 @@ def decode_one(record_bytes: bytes) -> dict[str, np.ndarray]:
     cells = cells.reshape(n_cells, 3)
     if cells.min() < 0 or cells.max() >= n_nodes:
         raise CylinderFlowError(
-            f"cells indices out of range [0,{n_nodes-1}]: "
-            f"min={cells.min()} max={cells.max()}."
+            f"cells indices out of range [0,{n_nodes - 1}]: min={cells.min()} max={cells.max()}."
         )
 
     if pressure.size % n_nodes != 0:
@@ -151,8 +145,7 @@ def decode_one(record_bytes: bytes) -> dict[str, np.ndarray]:
 
     if velocity.size != n_frames * n_nodes * 2:
         raise CylinderFlowError(
-            f"velocity length {velocity.size} != T*N*2 "
-            f"({n_frames}*{n_nodes}*2)."
+            f"velocity length {velocity.size} != T*N*2 ({n_frames}*{n_nodes}*2)."
         )
     velocity = velocity.reshape(n_frames, n_nodes, 2)
 
@@ -193,13 +186,13 @@ class GraphSample:
     Edge index uses the MGN convention ``edge_index`` of shape ``[2, E]``.
     """
 
-    node_features: np.ndarray          # [N, F_in]
-    edge_index: np.ndarray             # [2, E]
-    edge_attr: np.ndarray              # [E, D_edge]
-    target_velocity: np.ndarray        # [N, 2]
-    target_pressure: np.ndarray        # [N]
-    mesh_pos: np.ndarray               # [N, 2]
-    node_type: np.ndarray              # [N]
+    node_features: np.ndarray  # [N, F_in]
+    edge_index: np.ndarray  # [2, E]
+    edge_attr: np.ndarray  # [E, D_edge]
+    target_velocity: np.ndarray  # [N, 2]
+    target_pressure: np.ndarray  # [N]
+    mesh_pos: np.ndarray  # [N, 2]
+    node_type: np.ndarray  # [N]
     n_nodes: int = field(init=False)
     n_edges: int = field(init=False)
 
@@ -213,9 +206,12 @@ def _edges_from_cells(cells: np.ndarray) -> np.ndarray:
     # Triangular faces -> 3 directed edges each, then make undirected.
     edges = np.stack(
         [
-            cells[:, 0], cells[:, 1],
-            cells[:, 1], cells[:, 2],
-            cells[:, 2], cells[:, 0],
+            cells[:, 0],
+            cells[:, 1],
+            cells[:, 1],
+            cells[:, 2],
+            cells[:, 2],
+            cells[:, 0],
         ],
         axis=1,
     ).reshape(-1, 2)
@@ -292,15 +288,19 @@ def build_sample(
 class NormalizationStats:
     """Per-feature normalization statistics, computed over a split."""
 
-    velocity_mean: np.ndarray        # [2]
-    velocity_std: np.ndarray          # [2]
+    velocity_mean: np.ndarray  # [2]
+    velocity_std: np.ndarray  # [2]
     pressure_mean: float
     pressure_std: float
-    mesh_pos_min: np.ndarray          # [2]
-    mesh_pos_max: np.ndarray          # [2]
+    mesh_pos_min: np.ndarray  # [2]
+    mesh_pos_max: np.ndarray  # [2]
     node_type_counts: dict[int, int] = field(default_factory=dict)
     n_examples: int = 0
     n_nodes_total: int = 0
+    edge_rel_mean: np.ndarray = field(default_factory=lambda: np.zeros(2, dtype=np.float32))  # [2]
+    edge_rel_std: np.ndarray = field(default_factory=lambda: np.ones(2, dtype=np.float32))  # [2]
+    edge_dist_mean: float = 0.0
+    edge_dist_std: float = 1.0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -313,6 +313,10 @@ class NormalizationStats:
             "node_type_counts": {int(k): int(v) for k, v in self.node_type_counts.items()},
             "n_examples": self.n_examples,
             "n_nodes_total": self.n_nodes_total,
+            "edge_rel_mean": self.edge_rel_mean.tolist(),
+            "edge_rel_std": self.edge_rel_std.tolist(),
+            "edge_dist_mean": float(self.edge_dist_mean),
+            "edge_dist_std": float(self.edge_dist_std),
         }
 
     @classmethod
@@ -327,6 +331,10 @@ class NormalizationStats:
             node_type_counts={int(k): int(v) for k, v in data["node_type_counts"].items()},
             n_examples=int(data["n_examples"]),
             n_nodes_total=int(data["n_nodes_total"]),
+            edge_rel_mean=np.asarray(data.get("edge_rel_mean", [0.0, 0.0]), dtype=np.float32),
+            edge_rel_std=np.asarray(data.get("edge_rel_std", [1.0, 1.0]), dtype=np.float32),
+            edge_dist_mean=float(data.get("edge_dist_mean", 0.0)),
+            edge_dist_std=float(data.get("edge_dist_std", 1.0)),
         )
 
 
@@ -349,26 +357,29 @@ def compute_stats(
     p_max = -np.inf
     m_min = np.full(2, np.inf, dtype=np.float64)
     m_max = np.full(2, -np.inf, dtype=np.float64)
+    e_rel_mean = np.zeros(2, dtype=np.float64)
+    e_rel_var = np.zeros(2, dtype=np.float64)
+    e_dist_mean = 0.0
+    e_dist_var = 0.0
     type_counts: dict[int, int] = {}
     n_vectors = 0  # velocity vector count (N*T)
     p_count = 0
+    n_edges_total = 0
     n_examples = 0
     n_nodes_total = 0
 
     for ex in split_reader(data_dir, split, max_examples=max_examples):
         vel = ex["velocity"].reshape(-1, 2).astype(np.float64)  # [N*T, 2]
-        pres = ex["pressure"].reshape(-1).astype(np.float64)     # [N*T]
+        pres = ex["pressure"].reshape(-1).astype(np.float64)  # [N*T]
         mp = ex["mesh_pos"].astype(np.float64)
         nt = ex["node_type"]
 
-        # Welford update for velocity.
         for j in range(2):
             for x in vel[:, j]:
                 n_vectors += 1
                 delta = x - v_mean[j]
                 v_mean[j] += delta / n_vectors
                 v_var[j] += delta * (x - v_mean[j])
-        # Pressure Welford.
         for x in pres:
             p_count += 1
             d = x - p_mean
@@ -382,22 +393,53 @@ def compute_stats(
         for code in np.unique(nt).tolist():
             type_counts[int(code)] = type_counts.get(int(code), 0) + int((nt == code).sum())
 
+        edge_index = _edges_from_cells(ex["cells"])
+        src = mp[edge_index[0]]
+        dst = mp[edge_index[1]]
+        rel = dst - src
+        dist = np.linalg.norm(rel, axis=1)
+        for k in range(rel.shape[0]):
+            n_edges_total += 1
+            for j in range(2):
+                delta = rel[k, j] - e_rel_mean[j]
+                e_rel_mean[j] += delta / n_edges_total
+                e_rel_var[j] += delta * (rel[k, j] - e_rel_mean[j])
+            d = dist[k] - e_dist_mean
+            e_dist_mean += d / n_edges_total
+            e_dist_var += d * (dist[k] - e_dist_mean)
+
         n_examples += 1
         n_nodes_total += nt.shape[0]
 
     if n_vectors == 0 or p_count == 0:
         raise CylinderFlowError(f"No samples consumed from split '{split}'.")
 
+    eps = 1e-8
+    v_std = np.sqrt(v_var / n_vectors).astype(np.float32)
+    v_std = np.maximum(v_std, eps)
+    p_std = max(float(np.sqrt(p_var / p_count)), eps)
+    if n_edges_total > 0:
+        e_rel_std = np.sqrt(e_rel_var / n_edges_total).astype(np.float32)
+        e_rel_std = np.maximum(e_rel_std, eps)
+        e_dist_std = max(float(np.sqrt(e_dist_var / n_edges_total)), eps)
+    else:
+        e_rel_std = np.ones(2, dtype=np.float32)
+        e_dist_std = 1.0
+
     return NormalizationStats(
         velocity_mean=v_mean.astype(np.float32),
-        velocity_std=np.sqrt(v_var / n_vectors).astype(np.float32),
+        velocity_std=v_std,
         pressure_mean=p_mean,
-        pressure_std=np.sqrt(p_var / p_count),
+        pressure_std=p_std,
         mesh_pos_min=m_min.astype(np.float32),
         mesh_pos_max=m_max.astype(np.float32),
         node_type_counts=type_counts,
         n_examples=n_examples,
         n_nodes_total=n_nodes_total,
+        edge_rel_mean=e_rel_mean.astype(np.float32),
+        edge_rel_std=e_rel_std,
+        edge_dist_mean=float(e_dist_mean),
+        edge_dist_std=float(e_dist_std),
     )
 
 
@@ -425,3 +467,58 @@ def load_stats(base_dir: Path) -> NormalizationStats:
             f"No normalization stats at {path}. Run compute_stats() + save_stats() first."
         )
     return NormalizationStats.from_dict(read_json(path))
+
+
+def normalize_graph_sample(
+    sample: GraphSample,
+    stats: NormalizationStats,
+    eps: float = 1e-8,
+) -> GraphSample:
+    """Return a normalized copy of *sample* using *stats* (zero-mean/unit-var)."""
+    nf = sample.node_features.copy()
+    ea = sample.edge_attr.copy()
+    tv = sample.target_velocity.copy()
+    tp = sample.target_pressure.copy()
+
+    n_types = len(OBSERVED_NODE_TYPES)
+    vel_start = n_types
+    vel_end = vel_start + 2
+    pos_start = vel_end
+
+    v_std = np.maximum(stats.velocity_std, eps)
+    nf[:, vel_start:vel_end] = (nf[:, vel_start:vel_end] - stats.velocity_mean) / v_std
+
+    pos_range = stats.mesh_pos_max - stats.mesh_pos_min
+    pos_range = np.maximum(pos_range, eps)
+    nf[:, pos_start : pos_start + 2] = (
+        nf[:, pos_start : pos_start + 2] - stats.mesh_pos_min
+    ) / pos_range
+
+    e_rel_std = np.maximum(stats.edge_rel_std, eps)
+    ea[:, 0:2] = (ea[:, 0:2] - stats.edge_rel_mean) / e_rel_std
+    ea[:, 2] = (ea[:, 2] - stats.edge_dist_mean) / max(stats.edge_dist_std, eps)
+
+    tv = (tv - stats.velocity_mean) / v_std
+    tp = (tp - stats.pressure_mean) / max(stats.pressure_std, eps)
+
+    return GraphSample(
+        node_features=nf.astype(np.float32),
+        edge_index=sample.edge_index.copy(),
+        edge_attr=ea.astype(np.float32),
+        target_velocity=tv.astype(np.float32),
+        target_pressure=tp.astype(np.float32),
+        mesh_pos=sample.mesh_pos.copy(),
+        node_type=sample.node_type.copy(),
+    )
+
+
+def denormalize_predictions(
+    pred_vel: np.ndarray,
+    pred_pres: np.ndarray,
+    stats: NormalizationStats,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Denormalize velocity/pressure predictions back to physical units."""
+    v_std = np.maximum(stats.velocity_std, 1e-8)
+    vel = pred_vel * v_std + stats.velocity_mean
+    pres = pred_pres * max(stats.pressure_std, 1e-8) + stats.pressure_mean
+    return vel.astype(np.float32), pres.astype(np.float32)

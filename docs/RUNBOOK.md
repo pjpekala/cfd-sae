@@ -13,11 +13,11 @@ train_mgn (MGN next-frame, hidden 128, 9 message passes, colab epochs 25)
 
 For every step this runbook shows three equivalent ways to run it:
 
-- **(A) Wrapper** — `bash scripts/colab.sh ...` convenience (calls `colab exec` via Python `subprocess`)
-- **(B) Interactive shell** — `colab console -s cfd` → run raw `uv` commands manually (recommended manual path)
-- **(C) Non-interactive `colab exec`** — `printf '...' | colab exec -s cfd` alternative for scripting (collapsed)
+- **(A) Wrapper** — `bash scripts/colab.sh [--auth adc] ...` convenience (calls `colab --auth=adc exec` when `--auth adc`)
+- **(B) Interactive shell** — `colab --auth=adc console -s cfd` → run raw `uv` commands manually (recommended manual path)
+- **(C) Non-interactive `colab exec`** — `printf '...' | colab --auth=adc exec -s cfd` alternative for scripting (collapsed)
 
-Pick one path and stick with one auth strategy (oauth2 or `--auth=adc`) — mixing is unreliable. `(B)` is the preferred manual option: you `console` into the VM and type the `uv run python ...` commands directly, with history, tab-complete, and `Ctrl-C` support.
+Pick one path and stick with one auth strategy (oauth2 default vs `--auth adc`) — mixing is unreliable; pass `--auth adc` to every `colab.sh` command if you use `colab --auth=adc`. `(B)` is the preferred manual option: you `console` into the VM and type the `uv run python ...` commands directly, with history, tab-complete, and `Ctrl-C` support.
 
 ---
 
@@ -29,7 +29,7 @@ colab whoami   # prints active Google account / scopes / expiry
 # Drive mounted later belongs to THIS account — check before downloading 16 GB.
 ```
 
-Auth — whichever you use must prefix **every** `colab` command:
+Auth — whichever you use must prefix **every** `colab` command and wrapper call:
 
 - **oauth2 (default):** browser consent, token cached `~/.config/colab-cli/token.json`. Switch account: `rm ~/.config/colab-cli/token.json && colab whoami`.
 - **adc (student/alt account):**
@@ -37,10 +37,14 @@ Auth — whichever you use must prefix **every** `colab` command:
   gcloud auth application-default login \
     --scopes=openid,https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/userinfo.email,https://www.googleapis.com/auth/colaboratory
   colab --auth=adc whoami
-  # then use colab --auth=adc ... everywhere; scripts/colab.sh does NOT pass --auth
+  # then use --auth adc on every colab and colab.sh call:
+  colab --auth=adc new -s cfd --gpu T4
+  bash scripts/colab.sh --auth adc new
+  bash scripts/colab.sh --auth adc drive
+  bash scripts/colab.sh --auth adc sync
   ```
 
-VM name is `cfd` throughout. `colab.sh` hardcodes `SESSION=cfd`, `VM_DIR=/content/cfd-sae`, `DRIVE_BASE=/content/drive/MyDrive/cfd-sae`. `--dry-run` previews any wrapper command without executing.
+VM name is `cfd` throughout. `colab.sh` hardcodes `SESSION=cfd`, `VM_DIR=/content/cfd-sae`, `DRIVE_BASE=/content/drive/MyDrive/cfd-sae`. `--dry-run` previews any wrapper command without executing (now respects `--auth`).
 
 ```bash
 bash scripts/colab.sh --dry-run run train_mgn --run-name myrun --epochs 25
@@ -58,6 +62,9 @@ Repo URL for `sync` is taken from `git remote get-url origin` (ssh `git@host:org
 bash scripts/colab.sh new          # T4 free-tier; --gpu L4|A100|CPU to change
 bash scripts/colab.sh drive        # approve in browser, press Enter
 bash scripts/colab.sh status       # optional: confirm VM + Drive
+# ADC:
+bash scripts/colab.sh --auth adc new --gpu T4
+bash scripts/colab.sh --auth adc drive
 ```
 
 **Manual `colab` CLI**
@@ -77,6 +84,7 @@ colab status -s cfd
 
 ```bash
 bash scripts/colab.sh sync
+# ADC: bash scripts/colab.sh --auth adc sync
 ```
 
 **Interactive shell (preferred manual)**
@@ -159,8 +167,10 @@ Preset `configs/hardware/colab.yaml`: `hidden_dim 128`, `message_passing_steps 9
 
 ```bash
 bash scripts/colab.sh run train_mgn --run-name myrun --epochs 25
+bash scripts/colab.sh --auth adc run train_mgn --run-name myrun --epochs 25  # ADC
 # resume after disconnect:
 bash scripts/colab.sh run train_mgn --run-name myrun --resume --epochs 25
+bash scripts/colab.sh --auth adc run train_mgn --run-name myrun --resume --epochs 25  # ADC + resume
 # what it previews under --dry-run: colab exec -s cfd --timeout 3600 <<'PY' with guards
 # on /content/cfd-sae, /content/drive, and data/train.tfrecord
 ```
@@ -168,7 +178,7 @@ bash scripts/colab.sh run train_mgn --run-name myrun --resume --epochs 25
 **Interactive shell (preferred manual)**
 
 ```bash
-colab console -s cfd
+colab console -s cfd              # or: colab --auth=adc console -s cfd
 # inside VM:
 cd /content/cfd-sae && uv run python scripts/train_mgn.py --hardware colab --run-name myrun --epochs 25
 # resume after disconnect:
@@ -190,20 +200,36 @@ printf 'import subprocess; subprocess.run("cd /content/cfd-sae && uv run python 
 **Live TensorBoard (explicit sidecar, Drive-persistent)**
 
 ```bash
-# Terminal 1 — start TB sidecar for this run (polls Drive every 5s, ok with delay):
-bash scripts/colab.sh tensorboard myrun --port 6006
-# or interactive:
-colab console -s cfd
-# inside VM:
-nohup tensorboard --logdir /content/drive/MyDrive/cfd-sae/runs/myrun/tb --host 0.0.0.0 --port 6006 --reload_interval 5 > /tmp/tb-myrun.log 2>&1 &
-cat /tmp/tb-myrun.log   # if Colab prints a https://*.colab.googleusercontent.com proxy URL, open it
-exit
-# fallback local polling (same Drive path after colab download or Drive mount):
-uv run tensorboard --logdir runs/myrun/tb --port 6006   # → http://localhost:6006, 5-10s delay
+# Terminal 1 — LOCAL live view (recommended for google-colab-cli):
+# In a LOCAL terminal (not inside VM), poll the Drive-backed logs:
+uv run tensorboard --logdir runs/myrun/tb --port 6006   # → open http://localhost:6006 in browser
+# Keep it live as training writes to Drive: in another LOCAL terminal:
+while true; do bash scripts/colab.sh download myrun --tb-only >/dev/null 2>&1; sleep 10; done
+# ADC: while true; do bash scripts/colab.sh --auth adc download myrun --tb-only >/dev/null 2>&1; sleep 10; done
+# Stop polling loop with Ctrl-C when training ends.
+# Or single-command helper (starts TB + poll in foreground):
+bash scripts/colab.sh tensorboard myrun --poll --poll-interval 10 --port 6006
+bash scripts/colab.sh --auth adc tensorboard myrun --poll --port 6006  # ADC
 
-# Terminal 2 — then start/resume training (logs to runs/myrun/tb on Drive):
+# Terminal 2 — start/resume training (logs to runs/myrun/tb on Drive):
 bash scripts/colab.sh run train_mgn --run-name myrun --epochs 25
+bash scripts/colab.sh --auth adc run train_mgn --run-name myrun --epochs 25  # ADC
+# resume:
+bash scripts/colab.sh --auth adc run train_mgn --run-name myrun --resume --epochs 25
 # add --no-tb to disable
+```
+
+VM sidecar `0.0.0.0:6006` is NOT browsable from laptop via `google-colab-cli`.
+`http://0.0.0.0:6006/` printed inside `colab console -s cfd` is VM-internal — clicking it locally will fail.
+This is expected. Use the LOCAL polling above. VM sidecar only helps in a Colab notebook:
+
+```bash
+colab console -s cfd
+# inside VM (optional, notebook-only):
+nohup tensorboard --logdir /content/drive/MyDrive/cfd-sae/runs/myrun/tb --host 0.0.0.0 --port 6006 --reload_interval 5 > /tmp/tb-myrun.log 2>&1 &
+cat /tmp/tb-myrun.log   # will show TensorBoard 2.20.0 at http://0.0.0.0:6006/ (VM-internal)
+exit
+# In a Colab notebook instead: %load_ext tensorboard; %tensorboard --logdir /content/drive/MyDrive/cfd-sae/runs/myrun/tb
 ```
 
 <details><summary>Non-interactive TB alternative</summary>
@@ -273,17 +299,18 @@ bash scripts/colab.sh run train_sae --run-name myrun --epochs 25
 # resume: bash scripts/colab.sh run train_sae --run-name myrun --resume --epochs 25
 ```
 
-**Interactive shell**
+**Interactive shell (with LOCAL TB live, same pattern as §4)**
 
 ```bash
+# For live view, keep LOCAL: uv run tensorboard --logdir runs/myrun/tb --port 6006
+# + in another LOCAL terminal: while true; do bash scripts/colab.sh download myrun >/dev/null 2>&1; sleep 10; done
 colab console -s cfd
-# inside VM (TB sidecar optional, same as §4):
-nohup tensorboard --logdir /content/drive/MyDrive/cfd-sae/runs/myrun/tb --host 0.0.0.0 --port 6006 --reload_interval 5 > /tmp/tb-myrun.log 2>&1 &
+# inside VM:
 cd /content/cfd-sae && uv run python scripts/train_sae.py --hardware colab --run-name myrun --epochs 25
 # fixed epochs without early-stop:
 cd /content/cfd-sae && uv run python scripts/train_sae.py --hardware colab --run-name myrun --epochs 25 --no-val
 exit
-# TB logs: train/loss + train/l1 every step, val/mse per epoch → runs/myrun/tb
+# TB logs: train/loss + train/l1 every step, val/mse per epoch → runs/myrun/tb (Drive)
 ```
 
 <details><summary>Non-interactive alternative</summary>
@@ -370,7 +397,10 @@ jupyter lab  # open notebooks/05_analysis.ipynb, set run_name/split widgets, Run
 **Wrapper**
 
 ```bash
-bash scripts/colab.sh download myrun   # unpacks into ./checkpoints ./embeddings ./runs
+bash scripts/colab.sh download myrun                    # unpacks into ./checkpoints ./embeddings ./runs
+bash scripts/colab.sh download myrun --tb-only          # fast: only runs/myrun/tb for TB live
+bash scripts/colab.sh --auth adc download myrun         # ADC
+bash scripts/colab.sh --auth adc download myrun --tb-only
 ```
 
 **Interactive shell + manual download**
@@ -403,13 +433,17 @@ tar xzf cfd-sae-myrun.tgz -C .
 ## 10. Stop VM & Debug
 
 ```bash
-bash scripts/colab.sh stop        # wrapper
-colab stop -s cfd                 # manual (or colab --auth=adc stop -s cfd)
-colab status -s cfd               # manual status check
-colab log -s cfd -o colab_run_log.md   # optional log export
+bash scripts/colab.sh stop                    # wrapper
+bash scripts/colab.sh --auth adc stop         # ADC
+colab stop -s cfd                             # manual (or colab --auth=adc stop -s cfd)
+colab status -s cfd                           # manual status check
+colab log -s cfd -o colab_run_log.md          # optional log export
+# tensorboard live helper (TB + auto-poll, Drive-persistent):
+bash scripts/colab.sh tensorboard myrun --poll --poll-interval 10 --port 6006
+bash scripts/colab.sh --auth adc tensorboard myrun --poll --port 6006
 ```
 
-Interactive shell is also your debug shell: `colab console -s cfd` → `nvidia-smi`, `ls /content/drive/MyDrive/cfd-sae/checkpoints/myrun`, `cat /content/drive/MyDrive/cfd-sae/runs/myrun/run_metadata.json`, `exit` to leave.
+Interactive shell is also your debug shell: `colab --auth=adc console -s cfd` → `nvidia-smi`, `ls /content/drive/MyDrive/cfd-sae/checkpoints/myrun`, `cat /content/drive/MyDrive/cfd-sae/runs/myrun/run_metadata.json`, `cat /tmp/tb-myrun.log` (not `.lo`), `exit` to leave.
 
 ---
 
