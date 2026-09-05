@@ -7,6 +7,8 @@ This repo is being built as a reproducible, resumable pipeline for:
 3. training an SAE,
 4. running interpretability analysis.
 
+The goal is reproducing: https://arxiv.org/abs/2507.16069 
+
 Current priority is reliability and restartability (especially on Colab), not
 benchmark tuning.
 
