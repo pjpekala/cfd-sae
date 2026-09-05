@@ -31,7 +31,22 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train MGN (phase-3).")
     add_common_args(parser, include_resume=True)
     parser.add_argument("--epochs", type=int, default=None, help="Epoch override.")
-    parser.add_argument("--max-steps", type=int, default=None, help="Optional step cap (smoke).")
+    parser.add_argument(
+        "--max-steps",
+        type=int,
+        default=None,
+        help="""Maximum global steps to train. Training stops when global_step
+        reaches this value. Set to ~400000 to match the paper's typical stopping
+        point where loss plateaus. When combined with --patience, also enables
+        epoch-based early stopping if validation loss doesn't improve.""",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=None,
+        help="Per-GPU batch size. If None, uses config default (64 for "
+        "CylinderFlow, 32 for 3D C3FD).",
+    )
     parser.add_argument(
         "--save-every", type=int, default=200, help="Checkpoint every N global steps."
     )
@@ -88,6 +103,8 @@ def main() -> None:
     config = load_hardware_config(env.root, env.hardware)
     if args.epochs is not None:
         config.setdefault("mgn", {})["epochs"] = args.epochs
+    if args.batch_size is not None:
+        config.setdefault("mgn", {})["batch_size"] = args.batch_size
 
     if args.resume:
         assert_resume_config_compatible(env.run_dir, config)
@@ -99,7 +116,7 @@ def main() -> None:
 
     cfg = MGNConfig(
         hidden_dim=int(config.get("mgn", {}).get("hidden_dim", 128)),
-        message_passing_steps=int(config.get("mgn", {}).get("message_passing_steps", 9)),
+        message_passing_steps=15,
         node_in_dim=8,
         edge_dim=3,
     )
@@ -127,6 +144,8 @@ def main() -> None:
             )
 
     print(f"[train] MGN params: {sum(p.numel() for p in model.parameters()):,}")
+    batch_size = args.batch_size or config.get("mgn", {}).get("batch_size", 64)
+    print(f"[train] batch_size={batch_size} (per-GPU)")
     print(f"hardware={env.hardware} device={env.device} run_name={env.run_name}")
 
     stats = None
@@ -170,13 +189,22 @@ def main() -> None:
     global_step = start_step
     nan_seen = False
     num_epochs = args.epochs or config.get("mgn", {}).get("epochs", 1)
-    epoch = start_epoch
+    epoch = start_step = 0  # reset
     # If resuming mid-epoch and start_sample_idx >= len(flat_index), advance to next epoch
     if start_sample_idx >= len(flat_index):
         start_epoch += 1
         start_sample_idx = 0
 
-    velocity_offset = 4  # one-hot(4) then velocity(2) in node_features [N,8]
+    # Set up LR scheduler: exponential decay from 1e-3 to 1e-7.
+    # If max-steps provided, decay over that many steps.
+    # Otherwise decay over estimated full training duration.
+    max_steps_arg = args.max_steps
+    if max_steps_arg is None:
+        max_steps_arg = num_epochs * len(flat_index)
+    lr_final = 1e-7
+    lr_init = 1e-3
+    gamma = (lr_final / lr_init) ** (1.0 / max_steps_arg)
+    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=gamma)
 
     for epoch in range(start_epoch, num_epochs + 1):
         is_resumed_epoch = epoch == start_epoch and start_sample_idx > 0
@@ -222,6 +250,7 @@ def main() -> None:
                 continue
             loss.backward()
             optimizer.step()
+            scheduler.step()
 
             global_step += 1
             sample_idx_next = pos + 1
