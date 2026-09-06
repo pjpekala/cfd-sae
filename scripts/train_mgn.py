@@ -233,6 +233,7 @@ def main() -> None:
 
             nf, ei_t, ea, tv, tp = to_tensors(sample, env.device)
 
+            velocity_offset = 4  # [oh: cols 0-3, hist_feat: cols 4-5, mesh_pos: cols 6-7]
             if args.noise_std and args.noise_std > 0 and stats is not None:
                 noise = (
                     torch.randn(nf.shape[0], 2, device=nf.device, dtype=nf.dtype) * args.noise_std
