@@ -2,6 +2,7 @@ batch_size: 1
 num_workers: 2
 pin_memory: true
 gpu: T4
+analysis_batch_size: 500
 mgn:
   hidden_dim: 128
   message_passing_steps: 9

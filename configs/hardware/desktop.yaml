@@ -1,6 +1,7 @@
 batch_size: 1
 num_workers: 4
 pin_memory: true
+analysis_batch_size: 500
 mgn:
   hidden_dim: 128
   message_passing_steps: 9
